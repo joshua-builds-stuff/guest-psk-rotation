@@ -1,0 +1,9 @@
+# Secrets and runtime state — never commit these
+.env
+current_password.txt
+password_history.log
+backups/
+
+# Python
+__pycache__/
+*.py[cod]
