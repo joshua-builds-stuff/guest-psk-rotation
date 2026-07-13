@@ -16,6 +16,23 @@ only network traffic is to the Mist API.
 
 ---
 
+## Disclaimer
+
+This tool is provided **as is**, without warranty of any kind. It is a
+community project and is **not** an official Hewlett Packard Enterprise
+(HPE) product. The Mist platform is part of HPE Juniper Networking
+(formerly Juniper Networks, acquired by HPE in 2025) — this tool is not
+endorsed or supported by HPE, HPE Juniper Networking, or their technical
+support organizations (TAC). Use at your own risk.
+
+Unlike a read-only reporting tool, this project **modifies configuration**:
+rotating the password issues a `PUT` that updates the selected guest WLAN in
+its Wireless LAN Template — that is its entire purpose, and nothing else is
+changed. The API token therefore needs write access; scope it as narrowly as
+your organization allows, test with `--dry-run` first, consider enabling the
+pre-change JSON backups, and run rotations under your normal change-control
+process.
+
 ## Requirements
 
 - Python 3.8+ (nothing else to install).
