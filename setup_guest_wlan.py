@@ -5,6 +5,10 @@ Guest WLAN Setup (Juniper Mist)
 
 One-time interactive setup for the guest-password rotation tool.
 
+Provided as is, without warranty of any kind; not an official Hewlett
+Packard Enterprise (HPE) product and not supported by HPE or HPE Juniper
+Networking (formerly Juniper Networks).
+
 What it does:
   1. Collects your Mist Org ID, API Token, and cloud instance, validates
      them against the Mist API, and writes them to `.env`.
