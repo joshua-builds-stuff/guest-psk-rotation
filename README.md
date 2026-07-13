@@ -200,3 +200,7 @@ configuration**, along with the relevant change-control process.
 > not select an individual site; a template-derived WLAN applies wherever that
 > template is assigned. Only WLANs whose guest portal uses `portal.auth ==
 > "password"` are eligible — the scripts verify this and refuse anything else.
+
+## License
+
+[MIT](LICENSE)
