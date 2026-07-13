@@ -10,6 +10,11 @@ Reads the WLAN selected during setup (see setup_guest_wlan.py) from
 portal password with a single randomly chosen, school-safe English word
 (e.g. "apples", "rainbow", "penguin"). It then PUTs the full object back.
 
+Provided as is, without warranty of any kind; not an official Hewlett
+Packard Enterprise (HPE) product and not supported by HPE or HPE Juniper
+Networking (formerly Juniper Networks). This tool MODIFIES the selected
+guest WLAN (PUT) - scope the API token narrowly and test with --dry-run.
+
 Design goals (per project requirements):
   * 100% independent / pure Python: STANDARD LIBRARY ONLY (no pip installs).
   * No Internet access of any kind except the Mist API calls themselves.
