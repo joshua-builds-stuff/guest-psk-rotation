@@ -32,8 +32,10 @@ retried (answering no exits 1). Later steps print one ERROR line and
 exit 3, with no traceback. The response body is not included. See README.md.
 """
 
+import http.client
 import json
 import os
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -97,6 +99,12 @@ def mist_request(method, api_url, token, path, body=None, with_headers=False):
         result, headers = (e.code, detail), e.headers
     except urllib.error.URLError as e:
         raise RuntimeError(f"Connection error reaching Mist API: {e.reason}")
+    except (TimeoutError, socket.timeout):
+        raise RuntimeError(
+            f"Timed out after {API_TIMEOUT}s waiting for the Mist API to respond.")
+    except (OSError, http.client.HTTPException) as e:
+        raise RuntimeError(
+            f"Connection error reaching Mist API: {type(e).__name__}: {e}")
     return (*result, headers) if with_headers else result
 
 
