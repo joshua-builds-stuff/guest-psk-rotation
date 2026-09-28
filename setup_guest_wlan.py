@@ -106,6 +106,10 @@ def validate_credentials(api_url, token, org_id):
 # .env read / write
 # --------------------------------------------------------------------------- #
 
+class EnvWriteError(Exception):
+    """.env could not be written; the message names the preserved temp file."""
+
+
 def _clear_hidden(path: Path) -> None:
     """Best-effort removal of the Windows hidden/system attribute (no-op elsewhere)."""
     if os.name != "nt":
@@ -125,27 +129,45 @@ def _atomic_write_text(path: Path, content: str) -> None:
     into place. This is crash-safe AND sidesteps a Windows quirk: dotfiles on a
     Samba/SMB share are shown as 'hidden', and opening an existing hidden file
     with mode 'w' raises PermissionError. os.replace can overwrite a hidden
-    target; if it can't, clear the attribute or fall back to remove + rename.
+    target; if it can't, clear the attribute and retry, then fall back to
+    overwriting the existing file in place (mode 'r+' opens hidden files).
+
+    The destination is never deleted. The temp file is removed only after the
+    new content is in place; on failure it is kept and EnvWriteError names it
+    so the credentials can be recovered.
     """
     tmp = path.parent / f"envwrite.{os.getpid()}.tmp"
-    tmp.write_text(content, encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
     try:
         try:
             os.replace(tmp, path)
+            return
         except PermissionError:
-            _clear_hidden(path)
-            try:
-                os.replace(tmp, path)
-            except PermissionError:
-                if path.exists():
-                    os.remove(path)
-                os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+            pass
+        _clear_hidden(path)
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if not path.exists():
+                raise
+        with open(path, "r+", encoding="utf-8") as f:
+            f.seek(0)
+            f.write(content)
+            f.truncate()
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        raise EnvWriteError(
+            f"could not write {path} ({e}). The new settings were kept in "
+            f"{tmp}; rename it to {path.name} once the file is writable.") from e
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
 
 
 def upsert_env(updates: dict) -> None:
@@ -372,6 +394,9 @@ if __name__ == "__main__":
     except RuntimeError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(3)
+    except EnvWriteError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         print("\nCancelled.")
         sys.exit(1)
