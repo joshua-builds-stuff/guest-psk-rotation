@@ -43,6 +43,7 @@ from urllib.parse import urlparse
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_PATH = SCRIPT_DIR / ".env"
 API_TIMEOUT = 30
+PAGE_LIMIT = 1000  # Mist's documented maximum page size
 
 # The 12 Mist regional clouds (matches your standard env_handler convention).
 CLOUD_ENDPOINTS = {
@@ -66,8 +67,11 @@ _ALLOWED_HOSTS = frozenset(urlparse(url).hostname for _, url in CLOUD_ENDPOINTS.
 # Mist API (stdlib urllib only)
 # --------------------------------------------------------------------------- #
 
-def mist_request(method, api_url, token, path, body=None):
-    """Perform a Mist API request. Returns (status_code, parsed_json_or_text)."""
+def mist_request(method, api_url, token, path, body=None, with_headers=False):
+    """Perform a Mist API request. Returns (status_code, parsed_json_or_text).
+
+    With with_headers=True, returns (status_code, body, headers).
+    """
     url = f"{api_url.rstrip('/')}/api/v1{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -82,16 +86,39 @@ def mist_request(method, api_url, token, path, body=None):
                 raise RuntimeError(
                     f"Mist API returned a non-JSON response (HTTP {resp.getcode()}) "
                     f"for {method} {path}.") from None
-            return resp.getcode(), parsed
+            result = (resp.getcode(), parsed)
+            headers = resp.headers if with_headers else None
     except urllib.error.HTTPError as e:
         raw = e.read()
         try:
             detail = json.loads(raw)
         except Exception:
             detail = raw.decode("utf-8", errors="replace")[:300]
-        return e.code, detail
+        result, headers = (e.code, detail), e.headers
     except urllib.error.URLError as e:
         raise RuntimeError(f"Connection error reaching Mist API: {e.reason}")
+    return (*result, headers) if with_headers else result
+
+
+def mist_get_all(cfg, path, what):
+    """GET every page of a Mist list endpoint. Exits 3 if any page fails."""
+    items, page = [], 1
+    while True:
+        status, body, headers = mist_request(
+            "GET", cfg["api_url"], cfg["token"],
+            f"{path}?limit={PAGE_LIMIT}&page={page}", with_headers=True)
+        if status != 200 or not isinstance(body, list):
+            print(f"ERROR: could not list {what} (HTTP {status}, page {page}).",
+                  file=sys.stderr)
+            sys.exit(3)
+        items.extend(body)
+        try:
+            total = int((headers or {}).get("X-Page-Total", ""))
+        except ValueError:
+            total = None
+        if len(body) < PAGE_LIMIT or (total is not None and page * PAGE_LIMIT >= total):
+            return items
+        page += 1
 
 
 def validate_credentials(api_url, token, org_id):
@@ -276,11 +303,7 @@ def choose_template(cfg: dict) -> dict:
     print("  Step 2: Choose a Wireless LAN Template")
     print("=" * 68)
 
-    status, templates = mist_request(
-        "GET", cfg["api_url"], cfg["token"], f"/orgs/{cfg['org_id']}/templates")
-    if status != 200 or not isinstance(templates, list):
-        print(f"ERROR: could not list templates (HTTP {status}).", file=sys.stderr)
-        sys.exit(3)
+    templates = mist_get_all(cfg, f"/orgs/{cfg['org_id']}/templates", "templates")
     if not templates:
         print("No Wireless LAN Templates found in this org.", file=sys.stderr)
         sys.exit(3)
@@ -302,11 +325,7 @@ def choose_guest_wlan(cfg: dict, template: dict) -> dict:
     print("  Step 3: Choose the Guest Captive-Portal SSID")
     print("=" * 68)
 
-    status, wlans = mist_request(
-        "GET", cfg["api_url"], cfg["token"], f"/orgs/{cfg['org_id']}/wlans")
-    if status != 200 or not isinstance(wlans, list):
-        print(f"ERROR: could not list WLANs (HTTP {status}).", file=sys.stderr)
-        sys.exit(3)
+    wlans = mist_get_all(cfg, f"/orgs/{cfg['org_id']}/wlans", "WLANs")
 
     template_id = template.get("id")
     scoped = [w for w in wlans if w.get("template_id") == template_id]
