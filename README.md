@@ -185,6 +185,7 @@ the call, it exits **3**.
 | `current_password.txt` | Latest guest password (created on first rotate) |
 | `password_history.log` | Timestamped history (created on first rotate) |
 | `backups/` | Pre-change WLAN JSON snapshots (only if backups enabled) |
+| `rotate.lock` | Held during a rotation so overlapping runs exit 1 instead of racing |
 
 ## Deployment & review notes
 
