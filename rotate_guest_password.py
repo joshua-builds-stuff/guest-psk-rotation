@@ -8,7 +8,8 @@ Unattended rotation of a Mist guest captive-portal password.
 Reads the WLAN selected during setup (see setup_guest_wlan.py) from
 `.env`, pulls that WLAN's current JSON, and replaces the guest
 portal password with a single randomly chosen, school-safe English word
-(e.g. "apples", "rainbow", "penguin"). It then PUTs the full object back.
+(e.g. "apples", "rainbow", "penguin"). It then PUTs only the `portal`
+object (with the new password) back, and GETs the WLAN again to confirm.
 
 Provided as is, without warranty of any kind; not an official Hewlett
 Packard Enterprise (HPE) product and not supported by HPE or HPE Juniper
@@ -71,10 +72,6 @@ _ALLOWED_HOSTS = frozenset({
     "api.gc4.mist.com", "api.eu.mist.com", "api.gc3.mist.com", "api.ac6.mist.com",
     "api.gc6.mist.com", "api.ac5.mist.com", "api.gc5.mist.com", "api.gc7.mist.com",
 })
-
-# Server-managed / immutable fields that should not be sent back on PUT.
-_READONLY_WLAN_FIELDS = ("id", "org_id", "site_id", "created_time",
-                         "modified_time", "for_site", "msp_id")
 
 # --------------------------------------------------------------------------- #
 # Word list: 1200 single, wholesome, easy-to-remember English words.
@@ -334,9 +331,15 @@ def get_wlan(cfg: dict) -> dict:
     _die(3, f"Failed to GET WLAN (HTTP {status}): {_short(body)}")
 
 
-def put_wlan(cfg: dict, wlan_obj: dict) -> dict:
-    """PUT the full WLAN object back. Exits on API error."""
-    payload = {k: v for k, v in wlan_obj.items() if k not in _READONLY_WLAN_FIELDS}
+def put_portal_password(cfg: dict, portal: dict, new_password: str) -> dict:
+    """PUT only the WLAN's `portal` object with the new password.
+
+    Mist's PUT leaves omitted top-level fields untouched, so sending just
+    `portal` avoids writing back a stale snapshot of every other setting.
+    The rest of the portal dict is copied from the GET in case Mist replaces
+    nested objects wholesale. Exits on API error.
+    """
+    payload = {"portal": dict(portal, password=new_password)}
     status, body = mist_request(
         "PUT", cfg["api_url"], cfg["token"],
         f"/orgs/{cfg['org_id']}/wlans/{cfg['wlan_id']}",
@@ -512,10 +515,9 @@ def main() -> None:
         print("[DRY RUN] No changes were sent to Mist.")
         sys.exit(0)
 
-    # 3. Optional backup, then apply the change (full-object PUT preserves all fields).
+    # 3. Optional backup, then apply the change (portal-only PUT).
     backup_path = save_backup(ssid, wlan) if do_backup else None
-    wlan.setdefault("portal", {})["password"] = new_password
-    updated = put_wlan(cfg, wlan)
+    put_portal_password(cfg, wlan.get("portal") or {}, new_password)
 
     # 4. Mist accepted the PUT, so the new password may now be live. Publish
     #    it on stdout before anything else can fail.
@@ -523,21 +525,12 @@ def main() -> None:
     print(f"[{timestamp}] Guest WiFi password for SSID '{ssid}' updated.")
     print(f"    New password: {new_password}", flush=True)
 
-    # 5. Verify the change actually took effect.
-    applied = (updated.get("portal") or {}).get("password")
+    # 5. Verify with a fresh GET. Do not trust the PUT echo.
+    applied = (get_wlan(cfg).get("portal") or {}).get("password")
     if applied != new_password:
-        try:
-            status, fresh = mist_request(
-                "GET", cfg["api_url"], cfg["token"],
-                f"/orgs/{cfg['org_id']}/wlans/{cfg['wlan_id']}")
-        except RuntimeError:
-            status, fresh = None, None
-        if status == 200 and isinstance(fresh, dict):
-            applied = (fresh.get("portal") or {}).get("password")
-        if applied != new_password:
-            _die(3, f"Mist accepted the update (submitted password "
-                    f"'{new_password}') but the password did not match on "
-                    f"read-back. Please verify in the Mist dashboard.")
+        _die(3, f"Mist accepted the update (submitted password "
+                f"'{new_password}') but the password did not match on "
+                f"read-back. Please verify in the Mist dashboard.")
 
     # 6. Record the new (shareable) password so staff can find it.
     try:
