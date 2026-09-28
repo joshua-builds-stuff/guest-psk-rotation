@@ -151,6 +151,29 @@ python -c "import rotate_guest_password as r; w=r._WORDS; print(len(w),'words; s
 | 2 | The WLAN is not a guest `password` portal (nothing changed) |
 | 3 | Mist API / network error |
 
+A Mist **success** response (for example HTTP 200) whose body is not empty and
+is not JSON is exit **3**, including during `--dry-run`. That includes an HTML
+page from Mist or a proxy, and a body that is not valid UTF-8. Schedulers
+should treat it as a Mist API error. `rotate_guest_password.py` prints one
+line to stderr and does not print a Python traceback. The response body is
+left out of the message:
+
+```
+ERROR: Mist API returned a non-JSON response (HTTP 200) for GET /orgs/<org-id>/wlans/<wlan-id>.
+```
+
+The method, status, and path are the Mist call that failed (a password update
+uses `PUT` on that same WLAN path).
+
+`setup_guest_wlan.py` uses the same sentence. While it is checking credentials
+the line is `Validation failed: ...` and you can try again; answering **no**
+exits **1**. On a later step (listing templates or SSIDs, or re-checking the
+chosen SSID) it prints `ERROR: ...` to stderr and exits **3**.
+
+An HTTP **error** response whose body is not JSON is unchanged: the scripts
+still use that HTTP status. When `rotate_guest_password.py` cannot complete
+the call, it exits **3**.
+
 ## Files
 
 | File | Purpose |

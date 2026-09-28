@@ -35,7 +35,9 @@ Exit codes (for schedulers):
   0  success (password rotated, or dry-run completed)
   1  configuration / environment error (missing .env or fields)
   2  validation error (WLAN is not a guest 'password' portal)
-  3  Mist API / network error
+  3  Mist API / network error. A non-empty success body that is not
+     JSON is this case (one ERROR line, no traceback, body omitted),
+     including --dry-run. See README.md.
 """
 
 import argparse
