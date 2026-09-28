@@ -17,7 +17,8 @@ What it does:
      type); you pick the guest SSID you want to manage.
   4. Validates via the API that the chosen SSID has a guest captive portal
      (portal.auth == "password"). If it does not, it says so and lets you
-     pick again.
+     pick again. If the API call itself fails, it reports the HTTP error
+     instead (retry, or exit 3) rather than blaming the SSID.
   5. Asks whether to keep a JSON backup of the WLAN before each change.
   6. Records the WLAN ID (and your choices) in `.env`.
 
@@ -355,16 +356,54 @@ def choose_guest_wlan(cfg: dict, template: dict) -> dict:
         idx = _pick_index("\nSelect the SSID number: ", len(scoped))
         chosen = scoped[idx]
         # Authoritative re-validation from the single-WLAN endpoint.
-        status, detail = mist_request(
-            "GET", cfg["api_url"], cfg["token"],
-            f"/orgs/{cfg['org_id']}/wlans/{chosen['id']}")
-        portal = (detail or {}).get("portal") or {} if status == 200 else {}
+        detail = _get_wlan_detail(cfg, chosen)
+        if detail is None:
+            continue
+        portal = detail.get("portal") or {}
         auth = portal.get("auth")
         if auth == "password":
             print(f"  Validated: '{chosen.get('ssid')}' is a guest password portal.")
             return chosen
         print(f"  '{chosen.get('ssid')}' is NOT a guest portal SSID "
               f"(portal.auth is {auth!r}, expected 'password'). Pick another.")
+
+
+def _get_wlan_detail(cfg: dict, chosen: dict):
+    """GET one WLAN. Returns the WLAN dict, or None if the operator wants to
+    pick again. Exits 3 on API errors that retrying cannot fix."""
+    ssid = chosen.get("ssid")
+    while True:
+        status, detail = mist_request(
+            "GET", cfg["api_url"], cfg["token"],
+            f"/orgs/{cfg['org_id']}/wlans/{chosen['id']}")
+        if status == 200 and isinstance(detail, dict):
+            return detail
+        if status == 200:
+            reason = "unexpected response body"
+        else:
+            reason = f"HTTP {status}"
+        print(f"  Could not validate '{ssid}': Mist API error ({reason}): "
+              f"{_short(detail)}", file=sys.stderr)
+        if status in (401, 403):
+            print("ERROR: the API token was rejected while reading the WLAN. "
+                  "This is not a problem with the SSID; check the token "
+                  "and re-run setup.", file=sys.stderr)
+            sys.exit(3)
+        if status == 404:
+            print("  The WLAN was not found (it may have been deleted). "
+                  "Pick another.")
+            return None
+        if not prompt_yes_no("  Retry validating this SSID?", default=True):
+            print("ERROR: could not validate the chosen SSID; setup not "
+                  "completed.", file=sys.stderr)
+            sys.exit(3)
+
+
+def _short(body) -> str:
+    """Compact representation of an API error body."""
+    if isinstance(body, (dict, list)):
+        return json.dumps(body)[:300]
+    return str(body)[:300]
 
 
 def _pick_index(prompt: str, count: int) -> int:
