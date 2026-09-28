@@ -42,6 +42,7 @@ Exit codes (for schedulers):
 
 import argparse
 import json
+import os
 import secrets
 import sys
 import urllib.error
@@ -363,13 +364,40 @@ def generate_password() -> str:
     return secrets.choice(_WORDS)
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write `content` to a temp file, then os.replace() it over `path`."""
+    tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def record_new_password(ssid: str, password: str) -> None:
-    """Persist the new (shareable) password to local files for staff."""
+    """Persist the new (shareable) password to local files for staff.
+
+    current_password.txt is replaced atomically and written before the
+    history line, so the file staff read never lags behind the history.
+    Raises OSError naming the file that could not be written.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(HISTORY_LOG, "a", encoding="utf-8") as f:
-        f.write(f"{timestamp}\t{ssid}\t{password}\n")
-    with open(CURRENT_PASSWORD_FILE, "w", encoding="utf-8") as f:
-        f.write(password + "\n")
+    try:
+        _atomic_write_text(CURRENT_PASSWORD_FILE, password + "\n")
+    except OSError as e:
+        raise OSError(f"could not write {CURRENT_PASSWORD_FILE}: {e}") from e
+    try:
+        with open(HISTORY_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{timestamp}\t{ssid}\t{password}\n")
+    except OSError as e:
+        raise OSError(f"could not append {HISTORY_LOG}: {e}") from e
 
 
 def save_backup(ssid: str, wlan_obj: dict) -> Path:
@@ -451,18 +479,35 @@ def main() -> None:
     wlan.setdefault("portal", {})["password"] = new_password
     updated = put_wlan(cfg, wlan)
 
-    # 4. Verify the change actually took effect.
-    applied = (updated.get("portal") or {}).get("password")
-    if applied != new_password:
-        _die(3, "Mist accepted the update but the password did not match on "
-                "read-back. Please verify in the Mist dashboard.")
-
-    # 5. Record the new (shareable) password so staff can find it.
-    record_new_password(ssid, new_password)
-
+    # 4. Mist accepted the PUT, so the new password may now be live. Publish
+    #    it on stdout before anything else can fail.
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] Guest WiFi password for SSID '{ssid}' updated.")
-    print(f"    New password: {new_password}")
+    print(f"    New password: {new_password}", flush=True)
+
+    # 5. Verify the change actually took effect.
+    applied = (updated.get("portal") or {}).get("password")
+    if applied != new_password:
+        try:
+            status, fresh = mist_request(
+                "GET", cfg["api_url"], cfg["token"],
+                f"/orgs/{cfg['org_id']}/wlans/{cfg['wlan_id']}")
+        except RuntimeError:
+            status, fresh = None, None
+        if status == 200 and isinstance(fresh, dict):
+            applied = (fresh.get("portal") or {}).get("password")
+        if applied != new_password:
+            _die(3, f"Mist accepted the update (submitted password "
+                    f"'{new_password}') but the password did not match on "
+                    f"read-back. Please verify in the Mist dashboard.")
+
+    # 6. Record the new (shareable) password so staff can find it.
+    try:
+        record_new_password(ssid, new_password)
+    except OSError as e:
+        _die(1, f"Mist now uses password '{new_password}' for SSID '{ssid}', "
+                f"but saving it locally failed: {e}")
+
     print(f"    Recorded in:  {CURRENT_PASSWORD_FILE.name} and {HISTORY_LOG.name}")
     if backup_path:
         print(f"    Backup saved: {backup_path.name}")
