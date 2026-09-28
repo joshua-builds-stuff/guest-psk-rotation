@@ -71,7 +71,13 @@ def mist_request(method, api_url, token, path, body=None):
     try:
         with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
             raw = resp.read()
-            return resp.getcode(), (json.loads(raw) if raw else None)
+            try:
+                parsed = json.loads(raw) if raw else None
+            except ValueError:
+                raise RuntimeError(
+                    f"Mist API returned a non-JSON response (HTTP {resp.getcode()}) "
+                    f"for {method} {path}.") from None
+            return resp.getcode(), parsed
     except urllib.error.HTTPError as e:
         raw = e.read()
         try:
