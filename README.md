@@ -86,7 +86,9 @@ On success it:
 - verifies the WLAN is still a guest `password` portal (aborts if not),
 - optionally saves a JSON backup of the WLAN under `backups/` (only if you
   enabled backups at setup; override per run with `--backup` / `--no-backup`),
-- PUTs the change to Mist and reads it back to confirm,
+- PUTs only the WLAN's `portal` settings (with the new password) to Mist, so
+  other WLAN settings edited in the meantime are not overwritten, then GETs the
+  WLAN again to confirm,
 - writes the **new password** to:
   - `current_password.txt` (latest password, overwritten each run),
   - `password_history.log` (timestamped audit trail),
