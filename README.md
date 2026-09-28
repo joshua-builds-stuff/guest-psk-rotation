@@ -113,6 +113,10 @@ schtasks /Create /TN "Guest WiFi Rotate" /SC DAILY /ST 06:00 ^
 ```
 
 Staff can read the current password any time from `current_password.txt`.
+The password is on the first line; the lines below it name the SSID and WLAN ID
+it belongs to. If you re-run setup and pick a different WLAN, setup replaces
+the file with a **STALE** notice (and adds a marker to `password_history.log`)
+until the next rotation publishes a password for the new SSID.
 
 ## Modifying the password list
 
@@ -182,7 +186,7 @@ the call, it exits **3**.
 | `rotate_guest_password.py` | Unattended password rotation |
 | `.env` | Credentials + selected WLAN (created by setup) |
 | `.env.example` | Reference for the env format |
-| `current_password.txt` | Latest guest password (created on first rotate) |
+| `current_password.txt` | Latest guest password + its SSID/WLAN ID (created on first rotate; marked STALE if setup switches WLANs) |
 | `password_history.log` | Timestamped history (created on first rotate) |
 | `backups/` | Pre-change WLAN JSON snapshots (only if backups enabled) |
 | `rotate.lock` | Held during a rotation so overlapping runs exit 1 instead of racing |
