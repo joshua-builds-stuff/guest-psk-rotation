@@ -40,6 +40,7 @@ Exit codes (for schedulers):
 
 import argparse
 import json
+import os
 import secrets
 import sys
 import urllib.error
@@ -57,6 +58,7 @@ DEFAULT_ENV_PATH = SCRIPT_DIR / ".env"
 BACKUP_DIR = SCRIPT_DIR / "backups"
 HISTORY_LOG = SCRIPT_DIR / "password_history.log"
 CURRENT_PASSWORD_FILE = SCRIPT_DIR / "current_password.txt"
+LOCK_FILE = SCRIPT_DIR / "rotate.lock"
 
 API_TIMEOUT = 30  # seconds
 
@@ -368,12 +370,44 @@ def record_new_password(ssid: str, password: str) -> None:
 def save_backup(ssid: str, wlan_obj: dict) -> Path:
     """Save a timestamped backup of the pre-change WLAN JSON."""
     BACKUP_DIR.mkdir(exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     safe_ssid = "".join(c if c.isalnum() else "_" for c in (ssid or "wlan"))
     path = BACKUP_DIR / f"{safe_ssid}_{stamp}.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(wlan_obj, f, indent=2)
     return path
+
+
+def acquire_rotation_lock():
+    """Take an exclusive, non-blocking lock on LOCK_FILE, or exit 1.
+
+    The returned file object must stay open for the whole rotation; the OS
+    releases the lock when it is closed or the process exits.
+    """
+    f = open(LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            f.seek(0)
+            holder = f.read().strip() or "unknown holder"
+        except OSError:
+            holder = "unknown holder"
+        f.close()
+        _die(1, f"Another rotation is already running ({holder}; lock file "
+                f"{LOCK_FILE}). Not starting a second one.")
+    f.seek(0)
+    f.truncate()
+    f.write(f"pid {os.getpid()} started "
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.flush()
+    return f
 
 
 # --------------------------------------------------------------------------- #
@@ -420,6 +454,11 @@ def main() -> None:
     cfg = load_config(args.env)
     # CLI flag wins over the .env preference; default comes from setup.
     do_backup = cfg["backup_json"] if args.backup is None else args.backup
+
+    # Serialize real rotations: hold the lock from the GET until the local
+    # password files are written, so overlapping runs cannot leave
+    # current_password.txt on a word Mist has already replaced.
+    lock = None if args.dry_run else acquire_rotation_lock()
 
     # 1. Pull current WLAN JSON.
     wlan = get_wlan(cfg)

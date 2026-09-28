@@ -3,6 +3,7 @@
 current_password.txt
 password_history.log
 backups/
+rotate.lock
 
 # Python
 __pycache__/
