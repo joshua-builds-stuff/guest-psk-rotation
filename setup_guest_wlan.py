@@ -25,6 +25,11 @@ After this runs once, rotate_guest_password.py can rotate the password
 fully unattended (schedule it with Task Scheduler / cron).
 
 Pure Python standard library only. The only network calls are to Mist.
+
+A non-empty Mist success body that is not JSON is reported as an API
+error. Credential checks show it as "Validation failed" and can be
+retried (answering no exits 1). Later steps print one ERROR line and
+exit 3, with no traceback. The response body is not included. See README.md.
 """
 
 import json
