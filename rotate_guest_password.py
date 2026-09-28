@@ -42,9 +42,11 @@ Exit codes (for schedulers):
 """
 
 import argparse
+import http.client
 import json
 import os
 import secrets
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -314,6 +316,12 @@ def mist_request(method: str, api_url: str, token: str, path: str, body=None):
         return e.code, detail
     except urllib.error.URLError as e:
         raise RuntimeError(f"Connection error reaching Mist API: {e.reason}")
+    except (TimeoutError, socket.timeout):
+        raise RuntimeError(
+            f"Timed out after {API_TIMEOUT}s waiting for the Mist API to respond.")
+    except (OSError, http.client.HTTPException) as e:
+        raise RuntimeError(
+            f"Connection error reaching Mist API: {type(e).__name__}: {e}")
 
 
 def get_wlan(cfg: dict) -> dict:
