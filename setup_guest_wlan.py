@@ -20,7 +20,9 @@ What it does:
      pick again. If the API call itself fails, it reports the HTTP error
      instead (retry, or exit 3) rather than blaming the SSID.
   5. Asks whether to keep a JSON backup of the WLAN before each change.
-  6. Records the WLAN ID (and your choices) in `.env`.
+  6. Records the WLAN ID (and your choices) in `.env`. If this replaces a
+     previously configured WLAN, current_password.txt is marked stale and
+     a marker is added to password_history.log.
 
 After this runs once, rotate_guest_password.py can rotate the password
 fully unattended (schedule it with Task Scheduler / cron).
@@ -40,11 +42,14 @@ import socket
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_PATH = SCRIPT_DIR / ".env"
+CURRENT_PASSWORD_FILE = SCRIPT_DIR / "current_password.txt"
+HISTORY_LOG = SCRIPT_DIR / "password_history.log"
 API_TIMEOUT = 30
 PAGE_LIMIT = 1000  # Mist's documented maximum page size
 
@@ -215,6 +220,49 @@ def _atomic_write_text(path: Path, content: str) -> None:
         tmp.unlink()
     except OSError:
         pass
+
+
+def read_env() -> dict:
+    """Return the KEY=VALUE pairs currently in .env (empty if missing)."""
+    env = {}
+    if ENV_PATH.exists():
+        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key, value = stripped.split("=", 1)
+                env[key.strip()] = value.strip()
+    return env
+
+
+def invalidate_published_password(old_id: str, old_ssid: str,
+                                  new_id: str, new_ssid: str) -> bool:
+    """Mark the published password stale after the target WLAN changes.
+
+    current_password.txt still holds the previous WLAN's password until the
+    new WLAN is rotated, so replace it with a notice and add a marker to the
+    history log. Returns True if anything was changed.
+    """
+    if not old_id or old_id == new_id:
+        return False
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    old_label = f"'{old_ssid}' ({old_id})" if old_ssid else old_id
+    new_label = f"'{new_ssid}' ({new_id})" if new_ssid else new_id
+    changed = False
+    if CURRENT_PASSWORD_FILE.exists():
+        _atomic_write_text(CURRENT_PASSWORD_FILE, (
+            f"STALE - no current password for {new_label}.\n"
+            f"On {timestamp} setup changed the managed WLAN from {old_label} "
+            f"to {new_label}.\n"
+            f"The previous password must not be given to guests. Run "
+            f"rotate_guest_password.py to set a new one.\n"))
+        changed = True
+    if HISTORY_LOG.exists():
+        with open(HISTORY_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{timestamp}\t{new_ssid or new_id}\t"
+                    f"# TARGET WLAN CHANGED from {old_label} to {new_label}; "
+                    f"passwords above are for the previous WLAN\n")
+        changed = True
+    return changed
 
 
 def upsert_env(updates: dict) -> None:
@@ -445,6 +493,11 @@ def main() -> None:
         "\n  Save a JSON backup of the WLAN before each password change?",
         default=False)
 
+    previous = read_env()
+    invalidated = invalidate_published_password(
+        previous.get("MIST_WLAN_ID", ""), previous.get("MIST_WLAN_SSID", ""),
+        wlan.get("id", ""), wlan.get("ssid", ""))
+
     upsert_env({
         "MIST_WLAN_TEMPLATE_ID": template.get("id", ""),
         "MIST_WLAN_ID": wlan.get("id", ""),
@@ -461,6 +514,11 @@ def main() -> None:
     print(f"  WLAN ID:      {wlan.get('id')}")
     print(f"  JSON backups: {'on' if backup_pref else 'off'}")
     print(f"  Saved to:     {ENV_PATH}")
+    if invalidated:
+        print(f"\n  NOTE: the managed WLAN changed. {CURRENT_PASSWORD_FILE.name} "
+              f"was marked STALE;")
+        print("  do not hand out the previous password. Run the rotation now to")
+        print("  publish a password for the new SSID.")
     print("\n  Next: run  python rotate_guest_password.py  to rotate the password,")
     print("  or schedule it to run unattended (see README.md).")
 
