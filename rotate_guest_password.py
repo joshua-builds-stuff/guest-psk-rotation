@@ -393,16 +393,22 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
-def record_new_password(ssid: str, password: str) -> None:
+def record_new_password(ssid: str, password: str, wlan_id: str = "") -> None:
     """Persist the new (shareable) password to local files for staff.
 
-    current_password.txt is replaced atomically and written before the
-    history line, so the file staff read never lags behind the history.
+    current_password.txt keeps the password on the first line, followed by
+    the SSID and WLAN id it belongs to so a leftover file is self-describing.
+    It is replaced atomically and written before the history line, so the
+    file staff read never lags behind the history.
     Raises OSError naming the file that could not be written.
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    content = (f"{password}\n"
+               f"# SSID: {ssid}\n"
+               f"# WLAN ID: {wlan_id}\n"
+               f"# Set: {timestamp}\n")
     try:
-        _atomic_write_text(CURRENT_PASSWORD_FILE, password + "\n")
+        _atomic_write_text(CURRENT_PASSWORD_FILE, content)
     except OSError as e:
         raise OSError(f"could not write {CURRENT_PASSWORD_FILE}: {e}") from e
     try:
@@ -542,7 +548,7 @@ def main() -> None:
 
     # 6. Record the new (shareable) password so staff can find it.
     try:
-        record_new_password(ssid, new_password)
+        record_new_password(ssid, new_password, cfg["wlan_id"])
     except OSError as e:
         _die(1, f"Mist now uses password '{new_password}' for SSID '{ssid}', "
                 f"but saving it locally failed: {e}")
