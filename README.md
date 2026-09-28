@@ -14,6 +14,9 @@ each at least 6 characters long.
 Both scripts use the **Python standard library only** (no `pip install`), and the
 only network traffic is to the Mist API.
 
+Operator steps are in [docs/usage.md](docs/usage.md). Token handling, plaintext
+password files, the lock, and the portal update are in [SECURITY.md](SECURITY.md).
+
 ---
 
 ## Disclaimer
@@ -26,12 +29,13 @@ endorsed or supported by HPE, HPE Juniper Networking, or their technical
 support organizations (TAC). Use at your own risk.
 
 Unlike a read-only reporting tool, this project **modifies configuration**:
-rotating the password issues a `PUT` that updates the selected guest WLAN in
-its Wireless LAN Template — that is its entire purpose, and nothing else is
-changed. The API token therefore needs write access; scope it as narrowly as
-your organization allows, test with `--dry-run` first, consider enabling the
-pre-change JSON backups, and run rotations under your normal change-control
-process.
+rotating the password issues a `PUT` to the selected guest WLAN in its
+Wireless LAN Template. The body is only that WLAN's `portal` object (the
+portal settings just read from Mist, with the new password). Other top-level
+WLAN fields are omitted from the PUT. The API token therefore needs write
+access; scope it as narrowly as your organization allows, test with
+`--dry-run` first, consider enabling the pre-change JSON backups, and run
+rotations under your normal change-control process.
 
 ## Requirements
 
@@ -47,12 +51,76 @@ python setup_guest_wlan.py
 You'll be asked for:
 
 1. **Org ID**, **API Token**, and **Cloud** (a 1–12 menu). These are validated
-   against Mist and written to `.env`.
+   against Mist (`GET /api/v1/orgs/{org_id}`) and written to `.env`.
 2. A **Wireless LAN Template** (pick from the list found in your org).
 3. The **guest SSID** inside that template. The script confirms with the API
    that the SSID really is a guest captive portal (`portal.auth == "password"`).
    If it isn't, it tells you and lets you pick again.
 4. Whether to keep a **JSON backup** of the WLAN before each change (default: no).
+
+### Paging templates and WLANs
+
+Setup loads **every page** of templates and of org WLANs (`mist_get_all`,
+`limit=1000`). Requests are:
+
+- `GET /api/v1/orgs/{org_id}/templates?limit=1000&page={n}`
+- `GET /api/v1/orgs/{org_id}/wlans?limit=1000&page={n}`
+
+Paging starts at page 1. It stops when a page returns fewer than 1000 items,
+or when the `X-Page-Total` header is an integer and `page * 1000` has reached
+that total. SSIDs are then filtered to the template you picked
+(`template_id`). A page that is not HTTP 200, or whose body is not a list,
+prints one line and exits **3**:
+
+```
+ERROR: could not list templates (HTTP 401, page 1).
+ERROR: could not list WLANs (HTTP 500, page 2).
+```
+
+An empty template list, or a template with no SSIDs, also exits **3**.
+
+### Checking the chosen SSID
+
+After you pick a number, setup GETs that WLAN
+(`GET /api/v1/orgs/{org_id}/wlans/{wlan_id}`) and uses that response, not the
+list row.
+
+- HTTP 200 and `portal.auth == "password"`: accepted.
+- HTTP 200 and `portal.auth` is something else: it prints `NOT a guest portal`
+  with the actual `portal.auth` value and lets you pick again.
+- HTTP 200 whose body is not a WLAN object (`unexpected response body`): it
+  prints the error and asks `Retry validating this SSID?` (default yes).
+  Answering **no** exits **3**.
+- **401** or **403**: stderr includes `HTTP 401` or `HTTP 403` and a short
+  excerpt of the body (up to 300 characters), then:
+
+  ```
+  ERROR: the API token was rejected while reading the WLAN. This is not a problem with the SSID; check the token and re-run setup.
+  ```
+
+  Exit **3**.
+- **404**: stderr includes `HTTP 404`. The script says the WLAN was not found
+  and returns you to the SSID list.
+- **429**, **5xx**, and any other HTTP error: stderr includes `HTTP {status}`
+  and a short body excerpt, then the same retry prompt. Answering **no**
+  exits **3** with `ERROR: could not validate the chosen SSID; setup not completed.`
+
+A timeout, a connection error, or a non-JSON success body on that GET is the
+later-step path below: one `ERROR:` line and exit **3**, with no retry prompt.
+
+### Writing `.env`
+
+`.env` is updated in place as key/value pairs. The existing file is **never
+deleted** before the replacement is written. Setup writes
+`envwrite.<pid>.tmp` in this folder, flushes and `fsync`s it, then
+`os.replace`s it onto `.env`. On Windows, if replace hits `PermissionError`
+(hidden `.env` on an SMB share), it clears the hidden attribute and tries
+replace again, then overwrites the existing file in place (`r+`, truncate,
+`fsync`). The temp file is removed only after the new contents are in place.
+If the write still fails, setup exits **1** and the `ERROR:` line names
+`envwrite.<pid>.tmp`, which still holds the new settings (including the API
+token). The same writer is used when a WLAN switch replaces
+`current_password.txt` with a STALE notice.
 
 The result is saved to `.env`:
 
@@ -66,6 +134,21 @@ MIST_WLAN_SSID=Guest-WiFi
 MIST_BACKUP_JSON=false        # save a WLAN JSON backup before each change?
 ```
 
+### Switching the managed WLAN
+
+Re-running setup and choosing a **different** `MIST_WLAN_ID` marks the
+published password stale **before** `.env` is updated with the new WLAN.
+Choosing the same WLAN leaves `current_password.txt` and
+`password_history.log` unchanged. The first setup (no previous WLAN id)
+does not create those files.
+
+When `current_password.txt` already exists, it is replaced with a notice
+whose first line starts with `STALE`. The previous password is removed from
+that file. When `password_history.log` already exists, a marker line is
+appended; older lines stay in the log. Setup then prints a NOTE telling you
+to run the rotation before handing out a password. See
+[docs/usage.md](docs/usage.md#after-setup-changes-the-wlan).
+
 ## 2. Rotate the password
 
 Test first without changing anything:
@@ -74,28 +157,81 @@ Test first without changing anything:
 python rotate_guest_password.py --dry-run
 ```
 
+`--dry-run` still reads `.env`, GETs the WLAN, and checks `portal.auth`. It
+prints the word it would set and exits **0**. It does not PUT, does not take
+`rotate.lock`, and does not write `current_password.txt` or
+`password_history.log`.
+
 Then rotate for real:
 
 ```
 python rotate_guest_password.py
 ```
 
-On success it:
+A real run takes `rotate.lock` first (see below). On success it:
 
-- generates one random school-safe word,
-- verifies the WLAN is still a guest `password` portal (aborts if not),
-- optionally saves a JSON backup of the WLAN under `backups/` (only if you
-  enabled backups at setup; override per run with `--backup` / `--no-backup`),
-- PUTs only the WLAN's `portal` settings (with the new password) to Mist, so
-  other WLAN settings edited in the meantime are not overwritten, then GETs the
-  WLAN again to confirm,
-- writes the **new password** to:
-  - `current_password.txt` (latest password, overwritten each run),
-  - `password_history.log` (timestamped audit trail),
-  - and prints it to the screen.
+1. GETs the WLAN and checks it is still a guest `password` portal (exit **2**
+   if not; Mist is unchanged).
+2. Picks one random school-safe word, and picks again if that word is the
+   portal password just read.
+3. Optionally saves a JSON backup of that GET under `backups/` (only if you
+   enabled backups at setup; override per run with `--backup` /
+   `--no-backup`). The backup is written **before** the PUT.
+4. PUTs **only** `{"portal": ...}` to
+   `PUT /api/v1/orgs/{org_id}/wlans/{wlan_id}`. The `portal` object is the one
+   from the GET, with `password` set to the new word. Other top-level WLAN
+   fields are not sent.
+5. As soon as that PUT returns HTTP 200 with a JSON object, prints and flushes
+   the SSID and new password to stdout, **before** the confirming GET and
+   **before** any local password file is written:
+
+   ```
+   [2026-09-28 06:00:00] Guest WiFi password for SSID 'Guest-WiFi' updated.
+       New password: rainbow
+   ```
+
+6. GETs the WLAN again and compares `portal.password` to the word it sent. It
+   does not treat the PUT response body as confirmation.
+7. Writes `current_password.txt` (atomically), then appends
+   `password_history.log`.
+
+`current_password.txt` is replaced by writing `current_password.txt.<pid>.tmp`
+in this folder, flushing, `fsync`ing, and `os.replace`. The password is the
+first line; the lines under it name the SSID, WLAN id, and local time:
+
+```
+rainbow
+# SSID: Guest-WiFi
+# WLAN ID: 00000000-0000-0000-0000-000000000000
+# Set: 2026-09-28 06:00:00
+```
+
+`password_history.log` gains one tab-separated line:
+`timestamp`, SSID, password.
 
 Because the guest password is meant to be shared with visitors, it is stored in
 plaintext in those files on purpose. The **API token is never** logged.
+
+If the confirming GET fails, or `portal.password` does not match, the process
+exits **3** after the password is already on stdout. Local password files are
+left as they were. The mismatch line includes the submitted password:
+
+```
+ERROR: Mist accepted the update (submitted password 'rainbow') but the password did not match on read-back. Please verify in the Mist dashboard.
+```
+
+If Mist accepted the PUT and the read-back matched, but writing
+`current_password.txt` or appending `password_history.log` fails, the process
+exits **1**. Stdout already shows the password. The stderr line repeats it:
+
+```
+ERROR: Mist now uses password 'rainbow' for SSID 'Guest-WiFi', but saving it locally failed: ...
+```
+
+`current_password.txt` is written first. If that replace succeeded, its first
+line is the new password even when the history append is what failed. On a
+failed replace, the temp file is removed and any previous
+`current_password.txt` is left in place.
 
 ## 3. Schedule it (unattended)
 
@@ -114,11 +250,33 @@ schtasks /Create /TN "Guest WiFi Rotate" /SC DAILY /ST 06:00 ^
 0 6 * * *  /usr/bin/python3 /path/to/rotate_guest_password.py >> /path/to/rotate.log 2>&1
 ```
 
+That log receives stdout and stderr, so it will contain guest passwords.
+
 Staff can read the current password any time from `current_password.txt`.
 The password is on the first line; the lines below it name the SSID and WLAN ID
 it belongs to. If you re-run setup and pick a different WLAN, setup replaces
 the file with a **STALE** notice (and adds a marker to `password_history.log`)
 until the next rotation publishes a password for the new SSID.
+
+### `rotate.lock`
+
+A real rotation holds an exclusive, non-blocking lock on `rotate.lock` next
+to the script, from before the GET until the process exits. POSIX uses
+`fcntl.flock` (`LOCK_EX | LOCK_NB`). Windows uses `msvcrt.locking` with
+`LK_NBLCK` on one byte. After the lock is acquired the file contains one
+line, `pid <pid> started <YYYY-MM-DD HH:MM:SS>`. The operating system
+releases the lock when the process exits, including after a crash. A leftover
+`rotate.lock` file does not by itself block the next run.
+
+If another rotation holds the lock, this run exits **1** and does not call
+Mist:
+
+```
+ERROR: Another rotation is already running (pid 1234 started 2026-09-28 06:00:00; lock file /path/to/rotate.lock). Not starting a second one.
+```
+
+If the holder text cannot be read, the message says `unknown holder`.
+`--dry-run` does not take the lock. Setup does not take it either.
 
 ## Modifying the password list
 
@@ -153,9 +311,33 @@ python -c "import rotate_guest_password as r; w=r._WORDS; print(len(w),'words; s
 | Code | Meaning |
 |------|---------|
 | 0 | Success (or `--dry-run` completed) |
-| 1 | Configuration error (missing/invalid `.env`) |
-| 2 | The WLAN is not a guest `password` portal (nothing changed) |
-| 3 | Mist API / network error |
+| 1 | Local or configuration error (see below) |
+| 2 | The WLAN is not a guest `password` portal (rotation aborts; Mist is unchanged) |
+| 3 | Mist API / network error (see below) |
+
+**Exit 1** from `rotate_guest_password.py` covers a missing or invalid `.env`,
+a `MIST_API_URL` host outside the twelve Mist clouds, another run holding
+`rotate.lock`, a local password-file failure after Mist has accepted the new
+password, and Ctrl-C (`Interrupted.`).
+
+**Exit 1** from `setup_guest_wlan.py` covers declining another credential
+attempt (`Try again?` answered no), a failed `.env` or STALE-file write
+(`EnvWriteError`, the message names `envwrite.<pid>.tmp`), and Ctrl-C
+(`Cancelled.`).
+
+**Exit 2** is only the rotation script, when `portal.auth` is not `password`.
+
+**Exit 3** is a Mist or network failure. Both scripts use a 30 second timeout
+(`API_TIMEOUT`). `TimeoutError` and `socket.timeout` become a `RuntimeError`
+and exit **3**, one stderr line, no Python traceback:
+
+```
+ERROR: Timed out after 30s waiting for the Mist API to respond.
+```
+
+`URLError`, `OSError`, and `http.client.HTTPException` raised during the call
+use the same exit **3** path, with
+`ERROR: Connection error reaching Mist API: ...`.
 
 A Mist **success** response (for example HTTP 200) whose body is not empty and
 is not JSON is exit **3**, including during `--dry-run`. That includes an HTML
@@ -186,12 +368,14 @@ the call, it exits **3**.
 |------|---------|
 | `setup_guest_wlan.py` | One-time interactive setup |
 | `rotate_guest_password.py` | Unattended password rotation |
-| `.env` | Credentials + selected WLAN (created by setup) |
+| `docs/usage.md` | Operator steps |
+| `SECURITY.md` | Token, password files, lock, `.env` writes, portal PUT |
+| `.env` | Credentials + selected WLAN (created by setup; never deleted before a replacement is written) |
 | `.env.example` | Reference for the env format |
-| `current_password.txt` | Latest guest password + its SSID/WLAN ID (created on first rotate; marked STALE if setup switches WLANs) |
-| `password_history.log` | Timestamped history (created on first rotate) |
+| `current_password.txt` | Latest guest password on line 1, then SSID / WLAN ID / time (created on first rotate; replaced with a STALE notice if setup switches WLANs) |
+| `password_history.log` | Timestamped history (created on first rotate; a `TARGET WLAN CHANGED` marker is appended when setup switches WLANs) |
 | `backups/` | Pre-change WLAN JSON snapshots (only if backups enabled) |
-| `rotate.lock` | Held during a rotation so overlapping runs exit 1 instead of racing |
+| `rotate.lock` | Exclusive lock held for a real rotation (`fcntl` / `msvcrt`); a second rotation exits 1. Not taken on `--dry-run` |
 
 ## Deployment & review notes
 
