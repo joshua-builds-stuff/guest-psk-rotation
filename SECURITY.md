@@ -68,9 +68,11 @@ The file contents after a lock is taken are one line:
 `pid <pid> started <YYYY-MM-DD HH:MM:SS>`. `.gitignore` ignores `rotate.lock`.
 
 The lock is held by keeping the file open until the rotation process exits.
-It is not acquired for `--dry-run`. `setup_guest_wlan.py` does not acquire
-it, so setup can rewrite `.env` and the STALE notice while a rotation is in
-progress. Run setup when a rotation is not in progress.
+It is not acquired for `--dry-run`. `setup_guest_wlan.py` holds the same
+lock while it writes the STALE notice and saves the WLAN to `.env`; if a
+rotation holds it, setup exits **1** without saving. A rotation re-reads
+`.env` after taking the lock and exits **1** without a PUT, and without
+touching `current_password.txt`, if `MIST_WLAN_ID` changed.
 
 ## `.env` protection
 

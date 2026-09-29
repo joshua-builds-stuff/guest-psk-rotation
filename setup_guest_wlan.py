@@ -50,6 +50,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_PATH = SCRIPT_DIR / ".env"
 CURRENT_PASSWORD_FILE = SCRIPT_DIR / "current_password.txt"
 HISTORY_LOG = SCRIPT_DIR / "password_history.log"
+LOCK_FILE = SCRIPT_DIR / "rotate.lock"
 API_TIMEOUT = 30
 PAGE_LIMIT = 1000  # Mist's documented maximum page size
 
@@ -291,6 +292,39 @@ def upsert_env(updates: dict) -> None:
     _atomic_write_text(ENV_PATH, "\n".join(lines) + "\n")
 
 
+def acquire_rotation_lock():
+    """Take the same exclusive, non-blocking rotate.lock as a rotation, or exit 1.
+
+    Keep the returned file open while writing the STALE notice and .env.
+    """
+    f = open(LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            f.seek(0)
+            holder = f.read().strip() or "unknown holder"
+        except OSError:
+            holder = "unknown holder"
+        f.close()
+        print(f"ERROR: A rotation is running ({holder}; lock file {LOCK_FILE}). "
+              f"Setup did not save the new WLAN; run setup again when it "
+              f"finishes.", file=sys.stderr)
+        sys.exit(1)
+    f.seek(0)
+    f.truncate()
+    f.write(f"pid {os.getpid()} started "
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.flush()
+    return f
+
+
 # --------------------------------------------------------------------------- #
 # Interactive prompts
 # --------------------------------------------------------------------------- #
@@ -498,17 +532,21 @@ def main() -> None:
         "\n  Save a JSON backup of the WLAN before each password change?",
         default=False)
 
-    previous = read_env()
-    invalidated = invalidate_published_password(
-        previous.get("MIST_WLAN_ID", ""), previous.get("MIST_WLAN_SSID", ""),
-        wlan.get("id", ""), wlan.get("ssid", ""))
+    lock = acquire_rotation_lock()
+    try:
+        previous = read_env()
+        invalidated = invalidate_published_password(
+            previous.get("MIST_WLAN_ID", ""), previous.get("MIST_WLAN_SSID", ""),
+            wlan.get("id", ""), wlan.get("ssid", ""))
 
-    upsert_env({
-        "MIST_WLAN_TEMPLATE_ID": template.get("id", ""),
-        "MIST_WLAN_ID": wlan.get("id", ""),
-        "MIST_WLAN_SSID": wlan.get("ssid", ""),
-        "MIST_BACKUP_JSON": "true" if backup_pref else "false",
-    })
+        upsert_env({
+            "MIST_WLAN_TEMPLATE_ID": template.get("id", ""),
+            "MIST_WLAN_ID": wlan.get("id", ""),
+            "MIST_WLAN_SSID": wlan.get("ssid", ""),
+            "MIST_BACKUP_JSON": "true" if backup_pref else "false",
+        })
+    finally:
+        lock.close()
 
     print("\n" + "=" * 68)
     print("  SETUP COMPLETE")

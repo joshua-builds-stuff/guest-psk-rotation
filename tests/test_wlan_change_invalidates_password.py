@@ -28,6 +28,9 @@ class _TmpDirCase(unittest.TestCase):
         p3 = mock.patch.object(setup_guest_wlan, "ENV_PATH", self.env)
         p3.start()
         self.addCleanup(p3.stop)
+        p4 = mock.patch.object(setup_guest_wlan, "LOCK_FILE", self.dir / "rotate.lock")
+        p4.start()
+        self.addCleanup(p4.stop)
         self.addCleanup(self._tmp.cleanup)
 
 
