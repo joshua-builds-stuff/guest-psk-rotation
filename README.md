@@ -276,7 +276,9 @@ ERROR: Another rotation is already running (pid 1234 started 2026-09-28 06:00:00
 ```
 
 If the holder text cannot be read, the message says `unknown holder`.
-`--dry-run` does not take the lock. Setup does not take it either.
+`--dry-run` does not take the lock. Setup takes it while it saves the WLAN
+choice to `.env`; if `MIST_WLAN_ID` changed before a rotation got the lock,
+the rotation exits **1** without calling Mist.
 
 ## Modifying the password list
 

@@ -511,6 +511,16 @@ def main() -> None:
     # current_password.txt on a word Mist has already replaced.
     lock = None if args.dry_run else acquire_rotation_lock()
 
+    # Setup takes the same lock to change the managed WLAN. If it did so
+    # between our first read and the lock, do not rotate the previous WLAN.
+    if lock is not None:
+        locked_wlan_id = load_config(args.env)["wlan_id"]
+        if locked_wlan_id != cfg["wlan_id"]:
+            _die(1, f"MIST_WLAN_ID in {args.env} changed from "
+                    f"{cfg['wlan_id']} to {locked_wlan_id} while waiting for "
+                    f"the lock (setup ran). Nothing was changed; run the "
+                    f"rotation again.")
+
     # 1. Pull current WLAN JSON.
     wlan = get_wlan(cfg)
     ssid = wlan.get("ssid") or cfg["ssid"] or cfg["wlan_id"]
