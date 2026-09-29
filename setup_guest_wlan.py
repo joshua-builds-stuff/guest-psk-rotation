@@ -97,7 +97,12 @@ def mist_request(method, api_url, token, path, body=None, with_headers=False):
             result = (resp.getcode(), parsed)
             headers = resp.headers if with_headers else None
     except urllib.error.HTTPError as e:
-        raw = e.read()
+        try:
+            raw = e.read()
+        except (OSError, http.client.HTTPException) as read_err:
+            raise RuntimeError(
+                f"Connection error reaching Mist API: "
+                f"{type(read_err).__name__}: {read_err}") from None
         try:
             detail = json.loads(raw)
         except Exception:
