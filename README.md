@@ -323,9 +323,10 @@ a `MIST_API_URL` host outside the twelve Mist clouds, another run holding
 password, and Ctrl-C (`Interrupted.`).
 
 **Exit 1** from `setup_guest_wlan.py` covers declining another credential
-attempt (`Try again?` answered no), a failed `.env` or STALE-file write
-(`EnvWriteError`, the message names `envwrite.<pid>.tmp`), and Ctrl-C
-(`Cancelled.`).
+attempt (`Try again?` answered no), a rotation holding `rotate.lock`
+(`A rotation is running ...`; the STALE notice and WLAN id are not written),
+a failed `.env` or STALE-file write (`EnvWriteError`, the message names
+`envwrite.<pid>.tmp`), and Ctrl-C (`Cancelled.`).
 
 **Exit 2** is only the rotation script, when `portal.auth` is not `password`.
 

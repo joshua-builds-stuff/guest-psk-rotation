@@ -89,3 +89,12 @@ Python 3.8+, no `pip` install, and the `.env` keys are unchanged.
   Shipped in [#18](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/18)
   ([#17](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/17)).
   An HTTP error response that is not JSON is unchanged.
+
+- `setup_guest_wlan.py` takes the same `rotate.lock` as a rotation while it
+  writes the `STALE` notice and saves the WLAN id to `.env`. If a rotation
+  holds the lock, setup prints `ERROR: A rotation is running ... Setup did
+  not save the new WLAN` and exits **1** without that write. A rotation
+  re-reads `.env` after taking the lock and exits **1** without a PUT if
+  `MIST_WLAN_ID` changed.
+  [#28](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/28)
+  ([#24](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/24)).
