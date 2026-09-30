@@ -51,7 +51,11 @@ python setup_guest_wlan.py
 You'll be asked for:
 
 1. **Org ID**, **API Token**, and **Cloud** (a 1–12 menu). These are validated
-   against Mist (`GET /api/v1/orgs/{org_id}`) and written to `.env`.
+   against Mist (`GET /api/v1/orgs/{org_id}`). On success the script prints
+   the organization name. It does not write `.env` here — not
+   `MIST_API_URL`, `MIST_API_TOKEN`, or `MIST_ORG_ID`. Those keys are saved
+   later, in one write with the WLAN id, while setup holds `rotate.lock`
+   (see [Writing `.env`](#writing-env)).
 2. A **Wireless LAN Template** (pick from the list found in your org).
 3. The **guest SSID** inside that template. The script confirms with the API
    that the SSID really is a guest captive portal (`portal.auth == "password"`).
@@ -110,6 +114,24 @@ later-step path below: one `ERROR:` line and exit **3**, with no retry prompt.
 
 ### Writing `.env`
 
+Setup writes `.env` **once**, after you choose the template, the guest SSID,
+and the backup option. That write runs while setup holds `rotate.lock`. It
+stores this run's credentials and the WLAN choice together:
+
+- `MIST_API_URL`, `MIST_API_TOKEN`, `MIST_ORG_ID`
+- `MIST_WLAN_TEMPLATE_ID`, `MIST_WLAN_ID`, `MIST_WLAN_SSID`
+- `MIST_BACKUP_JSON`
+
+The token, org id, and WLAN id are not written on the step-1 org check
+alone. If setup exits before this write, the new token is not stored and any
+`.env` already on disk is left as it was. That includes declining another
+credential attempt (exit **1**), a template or WLAN list failure (exit
+**3**), a WLAN validation failure that exits **3**, Ctrl-C, and a rotation
+that already holds `rotate.lock` (exit **1**). On that lock exit the STALE
+notice is not written either. The same WLAN id on a later setup still
+updates `.env` with this run's token; it does not mark the password files
+stale.
+
 `.env` is updated in place as key/value pairs. The existing file is **never
 deleted** before the replacement is written. Setup writes
 `envwrite.<pid>.tmp` in this folder, flushes and `fsync`s it, then
@@ -137,7 +159,9 @@ MIST_BACKUP_JSON=false        # save a WLAN JSON backup before each change?
 ### Switching the managed WLAN
 
 Re-running setup and choosing a **different** `MIST_WLAN_ID` marks the
-published password stale **before** `.env` is updated with the new WLAN.
+published password stale **before** `.env` is updated. That update is the
+single locked write: this run's API token, org id, and API URL, plus the
+new WLAN id.
 Choosing the same WLAN leaves `current_password.txt` and
 `password_history.log` unchanged. The first setup (no previous WLAN id)
 does not create those files.
@@ -276,9 +300,13 @@ ERROR: Another rotation is already running (pid 1234 started 2026-09-28 06:00:00
 ```
 
 If the holder text cannot be read, the message says `unknown holder`.
-`--dry-run` does not take the lock. Setup takes it while it saves the WLAN
-choice to `.env`; if `MIST_WLAN_ID` changed before a rotation got the lock,
-the rotation exits **1** without calling Mist.
+`--dry-run` does not take the lock. Setup holds the same lock while it
+writes the STALE notice (only when the WLAN id changes) and while it writes
+`.env` once, with the API token, org id, and WLAN id together. If a rotation
+holds the lock, setup exits **1** without that write
+(`A rotation is running ... Setup did not save the new WLAN`). If
+`MIST_WLAN_ID` changed before a rotation got the lock, the rotation exits
+**1** without calling Mist.
 
 ## Modifying the password list
 
@@ -324,9 +352,9 @@ password, and Ctrl-C (`Interrupted.`).
 
 **Exit 1** from `setup_guest_wlan.py` covers declining another credential
 attempt (`Try again?` answered no), a rotation holding `rotate.lock`
-(`A rotation is running ...`; the STALE notice and WLAN id are not written),
-a failed `.env` or STALE-file write (`EnvWriteError`, the message names
-`envwrite.<pid>.tmp`), and Ctrl-C (`Cancelled.`).
+(`A rotation is running ...`; the STALE notice, credentials, and WLAN id
+are not written), a failed `.env` or STALE-file write (`EnvWriteError`, the
+message names `envwrite.<pid>.tmp`), and Ctrl-C (`Cancelled.`).
 
 **Exit 2** is only the rotation script, when `portal.auth` is not `password`.
 
@@ -373,12 +401,12 @@ the call, it exits **3**.
 | `rotate_guest_password.py` | Unattended password rotation |
 | `docs/usage.md` | Operator steps |
 | `SECURITY.md` | Token, password files, lock, `.env` writes, portal PUT |
-| `.env` | Credentials + selected WLAN (created by setup; never deleted before a replacement is written) |
+| `.env` | API token, org id, and selected WLAN, written together under `rotate.lock` (created by setup; never deleted before a replacement is written) |
 | `.env.example` | Reference for the env format |
 | `current_password.txt` | Latest guest password on line 1, then SSID / WLAN ID / time (created on first rotate; replaced with a STALE notice if setup switches WLANs) |
 | `password_history.log` | Timestamped history (created on first rotate; a `TARGET WLAN CHANGED` marker is appended when setup switches WLANs) |
 | `backups/` | Pre-change WLAN JSON snapshots (only if backups enabled) |
-| `rotate.lock` | Exclusive lock held for a real rotation (`fcntl` / `msvcrt`); a second rotation exits 1. Not taken on `--dry-run` |
+| `rotate.lock` | Exclusive lock held for a real rotation and for setup's one `.env` write (`fcntl` / `msvcrt`). A second rotation, or setup while a rotation holds it, exits 1. Not taken on `--dry-run` |
 
 ## Deployment & review notes
 

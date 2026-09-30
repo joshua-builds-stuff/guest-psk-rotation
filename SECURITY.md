@@ -6,10 +6,31 @@ unchanged (Python 3.8+, standard library only).
 
 ## API token
 
-The Mist API token is written only to `.env` as `MIST_API_TOKEN`, by
-`setup_guest_wlan.py`, after `GET /api/v1/orgs/{org_id}` succeeds. Both
-scripts send it on each Mist call as the header `Authorization: Token <token>`
-with `Content-Type: application/json`. The token is not a query parameter.
+The Mist API token, the org id, and the WLAN id are credentials in `.env`.
+Examples in this repository use placeholders only.
+
+`setup_guest_wlan.py` writes the token and org id in one update with the
+WLAN id, while it holds `rotate.lock`. Step 1 only checks the token with
+`GET /api/v1/orgs/{org_id}`. On success it prints the organization name and
+keeps the API URL, token, and org id in memory. It does not write `.env`
+on that check, and it does not print `Saved credentials to .env`. The write
+that records `MIST_WLAN_ID` (and `MIST_WLAN_TEMPLATE_ID`, `MIST_WLAN_SSID`,
+and `MIST_BACKUP_JSON`) is the write that records `MIST_API_URL`,
+`MIST_API_TOKEN`, and `MIST_ORG_ID`. A partial setup cannot leave a new API
+URL, token, or org id next to the previous `MIST_WLAN_ID`. The same WLAN id
+on a later setup still updates the token in that write; it does not mark
+the password files stale.
+
+If setup never reaches that write, the new token is not stored. Declining
+`Try again?` exits **1**. A template or WLAN list failure, or a WLAN
+validation failure that gives up, exits **3**. Ctrl-C exits **1**. If a
+rotation already holds `rotate.lock`, setup exits **1** and does not write
+the STALE notice or `.env`. An existing `.env` stays as it was, including
+any previous token.
+
+Both scripts send the token on each Mist call as the header
+`Authorization: Token <token>` with `Content-Type: application/json`. The
+token is not a query parameter.
 
 The scripts do not write the token to stdout, `current_password.txt`,
 `password_history.log`, `rotate.lock`, or the JSON files under `backups/`.
@@ -65,14 +86,17 @@ on a word Mist has already replaced. The lock is exclusive and non-blocking:
 without sending a PUT.
 
 The file contents after a lock is taken are one line:
-`pid <pid> started <YYYY-MM-DD HH:MM:SS>`. `.gitignore` ignores `rotate.lock`.
+`pid <pid> started <YYYY-MM-DD HH:MM:SS>`. That line is not the API token,
+the org id, or the WLAN id. `.gitignore` ignores `rotate.lock`.
 
 The lock is held by keeping the file open until the rotation process exits.
 It is not acquired for `--dry-run`. `setup_guest_wlan.py` holds the same
-lock while it writes the STALE notice and saves the WLAN to `.env`; if a
-rotation holds it, setup exits **1** without saving. A rotation re-reads
-`.env` after taking the lock and exits **1** without a PUT, and without
-touching `current_password.txt`, if `MIST_WLAN_ID` changed.
+lock while it writes the STALE notice (only when the WLAN id changes) and
+saves credentials together with the WLAN id to `.env` in one write: API
+token, org id, API URL, template id, WLAN id, SSID, and backup flag. If a
+rotation holds the lock, setup exits **1** without that write. A rotation
+re-reads `.env` after taking the lock and exits **1** without a PUT, and
+without touching `current_password.txt`, if `MIST_WLAN_ID` changed.
 
 ## `.env` protection
 
