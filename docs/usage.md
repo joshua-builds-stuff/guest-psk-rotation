@@ -183,7 +183,9 @@ while the first is still running. A later schedule slot is enough.
 `rotate.lock` sits next to the scripts. A real rotation creates or opens it
 and takes an exclusive non-blocking lock (`fcntl.flock` on Linux and macOS,
 `msvcrt.locking` `LK_NBLCK` of 1 byte on Windows). `--dry-run` does not lock.
-Setup does not lock.
+Setup holds the same `rotate.lock` while it writes the STALE notice and the
+WLAN id to `.env`. If a rotation holds the lock, setup exits **1** without
+that write.
 
 While the lock is held, the file's text is:
 
@@ -194,7 +196,9 @@ pid 1234 started 2026-09-28 06:00:00
 That line is what a second run prints. It is a pid and a start time, not the
 password and not the API token.
 
-If you see `Another rotation is already running`, wait until that pid exits.
+If a rotation prints `Another rotation is already running`, or setup prints
+`A rotation is running ... Setup did not save the new WLAN`, wait until that
+pid exits. Then run the rotation or setup again.
 Deleting `rotate.lock` is not required. The lock is the operating-system
 lock on the open file; when the holder exits (or is killed) the lock is
 released even if the file remains. The next rotation truncates the file and
@@ -205,7 +209,7 @@ writes its own pid line.
 | Code | `rotate_guest_password.py` | `setup_guest_wlan.py` |
 |------|----------------------------|------------------------|
 | 0 | Password rotated, or `--dry-run` finished | Setup finished and printed `SETUP COMPLETE` |
-| 1 | Bad or missing `.env`, API host not a Mist cloud, lock busy, local password file failed after Mist accepted the password, or Ctrl-C | Credential prompt cancelled, `.env` / STALE write failed, or Ctrl-C |
+| 1 | Bad or missing `.env`, API host not a Mist cloud, lock busy, local password file failed after Mist accepted the password, or Ctrl-C | Credential prompt cancelled, a rotation holds `rotate.lock` (the WLAN was not saved), `.env` / STALE write failed, or Ctrl-C |
 | 2 | `portal.auth` is not `password`. Nothing was PUT | Not used |
 | 3 | Mist HTTP error, timeout (30s), connection error, non-JSON success body, or read-back mismatch | Same Mist failures on later steps; list-page failure; 401/403 while reading the chosen WLAN; validation retry declined |
 
