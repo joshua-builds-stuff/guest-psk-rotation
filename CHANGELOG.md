@@ -98,3 +98,25 @@ Python 3.8+, no `pip` install, and the `.env` keys are unchanged.
   `MIST_WLAN_ID` changed.
   [#28](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/28)
   ([#24](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/24)).
+
+## 2026-09-30
+
+**Revision: minor**
+
+### Fixed
+
+- `setup_guest_wlan.py` no longer writes Mist credentials when the step-1
+  org check succeeds. `MIST_API_URL`, `MIST_API_TOKEN`, and `MIST_ORG_ID`
+  are saved in the same `rotate.lock` write as `MIST_WLAN_ID`,
+  `MIST_WLAN_TEMPLATE_ID`, `MIST_WLAN_SSID`, and `MIST_BACKUP_JSON`. If
+  setup exits before that write, the new token is not stored and any
+  previous `.env` is left as it was. That includes declining `Try again?`
+  (exit **1**), a later step exiting **3**, Ctrl-C, and a rotation holding
+  `rotate.lock` (exit **1**; the STALE notice is not written either). The
+  lock rules are unchanged: exclusive and non-blocking, not taken on
+  `--dry-run`, and a busy lock still exits **1** with no Mist call from a
+  second rotation.
+  [#31](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/31)
+  ([#29](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/29)).
+
+Python 3.8+, no `pip` install, and the `.env` key names are unchanged.

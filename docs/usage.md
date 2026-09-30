@@ -18,8 +18,10 @@ The prompts are:
 
 1. **Mist Organization ID**, **Mist API Token**, and a **cloud number (1–12)**.
    Setup calls `GET /api/v1/orgs/{org_id}` on the host you picked. On success
-   it prints the org name and writes `MIST_API_URL`, `MIST_API_TOKEN`, and
-   `MIST_ORG_ID` to `.env`.
+   it prints `Connected to organization: <name>`. It does not write `.env`
+   and it does not print `Saved credentials to .env`. The API URL, token,
+   and org id stay in memory until the locked write at the end of setup,
+   which stores them with the WLAN id. See [Lock file](#lock-file).
 2. A **Wireless LAN Template**, numbered from the full org list.
 3. The **guest SSID** in that template. Rows tagged
    ` <-- guest password portal` already show `portal.auth=password` on the
@@ -56,8 +58,14 @@ for `WLANs`.
 Setup prints `Validation failed: ...` and asks `Try again? [Y/n]`. That
 includes a bad token, a bad org id, an unrecognized cloud URL, a timeout
 (`Timed out after 30s waiting for the Mist API to respond.`), a connection
-error, and a non-JSON success body. Answering **no** exits **1**. `.env` is
-not given those credentials until a check succeeds.
+error, and a non-JSON success body. Answering **no** exits **1** and leaves
+`.env` unchanged. A check that succeeds also leaves `.env` unchanged. The
+token, org id, and API URL are stored only in the locked write with the
+WLAN id, after the template, SSID, and backup steps finish. If one of those
+later steps exits **3**, or a rotation holds `rotate.lock` (setup exits
+**1**), the token you typed is not saved. If `.env` already exists, it keeps
+its previous API URL, token, org id, and WLAN id. A partial setup cannot
+leave a new token or org next to the previous WLAN id.
 
 ### When the SSID check fails
 
@@ -183,9 +191,14 @@ while the first is still running. A later schedule slot is enough.
 `rotate.lock` sits next to the scripts. A real rotation creates or opens it
 and takes an exclusive non-blocking lock (`fcntl.flock` on Linux and macOS,
 `msvcrt.locking` `LK_NBLCK` of 1 byte on Windows). `--dry-run` does not lock.
-Setup holds the same `rotate.lock` while it writes the STALE notice and the
-WLAN id to `.env`. If a rotation holds the lock, setup exits **1** without
-that write.
+Setup holds the same `rotate.lock` while it writes the STALE notice (only
+when the WLAN id changes) and while it writes `.env` once. That one write
+sets `MIST_API_URL`, `MIST_API_TOKEN`, `MIST_ORG_ID`,
+`MIST_WLAN_TEMPLATE_ID`, `MIST_WLAN_ID`, `MIST_WLAN_SSID`, and
+`MIST_BACKUP_JSON` together. Step 1 does not write the credential keys on
+its own. If a rotation holds the lock, setup exits **1** without that
+write: the new token is not saved, the STALE notice is not written, and the
+previous `.env` stays as it was.
 
 While the lock is held, the file's text is:
 
@@ -194,7 +207,7 @@ pid 1234 started 2026-09-28 06:00:00
 ```
 
 That line is what a second run prints. It is a pid and a start time, not the
-password and not the API token.
+guest password, the API token, the org id, or the WLAN id.
 
 If a rotation prints `Another rotation is already running`, or setup prints
 `A rotation is running ... Setup did not save the new WLAN`, wait until that
@@ -209,7 +222,7 @@ writes its own pid line.
 | Code | `rotate_guest_password.py` | `setup_guest_wlan.py` |
 |------|----------------------------|------------------------|
 | 0 | Password rotated, or `--dry-run` finished | Setup finished and printed `SETUP COMPLETE` |
-| 1 | Bad or missing `.env`, API host not a Mist cloud, lock busy, local password file failed after Mist accepted the password, or Ctrl-C | Credential prompt cancelled, a rotation holds `rotate.lock` (the WLAN was not saved), `.env` / STALE write failed, or Ctrl-C |
+| 1 | Bad or missing `.env`, API host not a Mist cloud, lock busy, local password file failed after Mist accepted the password, or Ctrl-C | Credential prompt cancelled, a rotation holds `rotate.lock` (credentials and the WLAN were not saved), `.env` / STALE write failed, or Ctrl-C |
 | 2 | `portal.auth` is not `password`. Nothing was PUT | Not used |
 | 3 | Mist HTTP error, timeout (30s), connection error, non-JSON success body, or read-back mismatch | Same Mist failures on later steps; list-page failure; 401/403 while reading the chosen WLAN; validation retry declined |
 
@@ -231,7 +244,9 @@ During setup's credential prompt, that same failure is prefixed
 ## After setup changes the WLAN
 
 When setup saves a WLAN id that differs from the `MIST_WLAN_ID` already in
-`.env`, it updates the local password files **before** it writes the new id:
+`.env`, it updates the local password files **before** it writes `.env`.
+That `.env` write also stores this run's API token, org id, and API URL
+together with the new WLAN id:
 
 - If `current_password.txt` exists, it is replaced. The new text starts with
   `STALE` and does not contain the previous password:
