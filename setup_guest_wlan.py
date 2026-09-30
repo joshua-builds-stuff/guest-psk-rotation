@@ -11,7 +11,7 @@ Networking (formerly Juniper Networks).
 
 What it does:
   1. Collects your Mist Org ID, API Token, and cloud instance, validates
-     them against the Mist API, and writes them to `.env`.
+     them against the Mist API. Nothing is written to `.env` yet.
   2. Lists every Wireless LAN Template in the org; you pick one.
   3. Lists the SSIDs in that template (annotated with their portal auth
      type); you pick the guest SSID you want to manage.
@@ -20,7 +20,8 @@ What it does:
      pick again. If the API call itself fails, it reports the HTTP error
      instead (retry, or exit 3) rather than blaming the SSID.
   5. Asks whether to keep a JSON backup of the WLAN before each change.
-  6. Records the WLAN ID (and your choices) in `.env`. If this replaces a
+  6. Records the credentials, WLAN ID, and your choices in `.env` in one
+     write, under rotate.lock. If this replaces a
      previously configured WLAN, current_password.txt is marked stale and
      a marker is added to password_history.log.
 
@@ -365,7 +366,8 @@ def choose_cloud() -> str:
 # --------------------------------------------------------------------------- #
 
 def collect_and_store_credentials() -> dict:
-    """Prompt for creds, validate, and write them to .env."""
+    """Prompt for creds and validate them. Nothing is written to .env here;
+    main() saves them together with the WLAN id under rotate.lock."""
     print("=" * 68)
     print("  GUEST WLAN SETUP - Step 1: API Credentials")
     print("=" * 68)
@@ -379,12 +381,6 @@ def collect_and_store_credentials() -> dict:
         ok, result = validate_credentials(api_url, token, org_id)
         if ok:
             print(f"  Connected to organization: {result}")
-            upsert_env({
-                "MIST_API_URL": api_url,
-                "MIST_API_TOKEN": token,
-                "MIST_ORG_ID": org_id,
-            })
-            print(f"  Saved credentials to {ENV_PATH.name}")
             return {"api_url": api_url, "token": token,
                     "org_id": org_id, "org_name": result}
         print(f"  Validation failed: {result}")
@@ -540,6 +536,9 @@ def main() -> None:
             wlan.get("id", ""), wlan.get("ssid", ""))
 
         upsert_env({
+            "MIST_API_URL": cfg["api_url"],
+            "MIST_API_TOKEN": cfg["token"],
+            "MIST_ORG_ID": cfg["org_id"],
             "MIST_WLAN_TEMPLATE_ID": template.get("id", ""),
             "MIST_WLAN_ID": wlan.get("id", ""),
             "MIST_WLAN_SSID": wlan.get("ssid", ""),
