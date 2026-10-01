@@ -50,8 +50,9 @@ temp file contains the same keys as `.env`, including `MIST_API_TOKEN`. Treat
 it as a secret: move it into place or delete it, and do not commit it.
 `.gitignore` does not list `envwrite.*.tmp` by name; it does ignore `.env`.
 
-The writers use `open()` with the default mode. They do not call `chmod` or
-set a Windows ACL. On Unix the file mode follows the process umask.
+Secret files and replacement temp files are created with mode `0o600`, and
+existing files are tightened on write. On Windows `os.chmod` is best-effort;
+configure filesystem ACLs separately to restrict access.
 
 ## Plaintext guest passwords
 

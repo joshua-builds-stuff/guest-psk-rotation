@@ -181,6 +181,15 @@ def _clear_hidden(path: Path) -> None:
         pass
 
 
+def _chmod_secret(path: Path) -> None:
+    """Restrict an existing secret file (best effort on Windows)."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        if os.name != "nt":
+            raise
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     """Write text to `path` atomically and robustly.
 
@@ -196,29 +205,35 @@ def _atomic_write_text(path: Path, content: str) -> None:
     so the credentials can be recovered.
     """
     tmp = path.parent / f"envwrite.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with os.fdopen(os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600),
+                   "w", encoding="utf-8") as f:
+        _chmod_secret(tmp)
         f.write(content)
         f.flush()
         os.fsync(f.fileno())
     try:
         try:
             os.replace(tmp, path)
+            _chmod_secret(path)
             return
         except PermissionError:
             pass
         _clear_hidden(path)
         try:
             os.replace(tmp, path)
+            _chmod_secret(path)
             return
         except PermissionError:
             if not path.exists():
                 raise
+        _chmod_secret(path)
         with open(path, "r+", encoding="utf-8") as f:
             f.seek(0)
             f.write(content)
             f.truncate()
             f.flush()
             os.fsync(f.fileno())
+        _chmod_secret(path)
     except OSError as e:
         raise EnvWriteError(
             f"could not write {path} ({e}). The new settings were kept in "
@@ -264,10 +279,14 @@ def invalidate_published_password(old_id: str, old_ssid: str,
             f"rotate_guest_password.py to set a new one.\n"))
         changed = True
     if HISTORY_LOG.exists():
-        with open(HISTORY_LOG, "a", encoding="utf-8") as f:
+        _chmod_secret(HISTORY_LOG)
+        with os.fdopen(os.open(HISTORY_LOG, os.O_CREAT | os.O_WRONLY | os.O_APPEND,
+                               0o600), "a", encoding="utf-8") as f:
+            _chmod_secret(HISTORY_LOG)
             f.write(f"{timestamp}\t{new_ssid or new_id}\t"
                     f"# TARGET WLAN CHANGED from {old_label} to {new_label}; "
                     f"passwords above are for the previous WLAN\n")
+        _chmod_secret(HISTORY_LOG)
         changed = True
     return changed
 
