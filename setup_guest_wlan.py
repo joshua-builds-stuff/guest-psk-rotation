@@ -16,7 +16,7 @@ What it does:
   3. Lists the SSIDs in that template (annotated with their portal auth
      type); you pick the guest SSID you want to manage.
   4. Validates via the API that the chosen SSID has a guest captive portal
-     (portal.auth == "password"). If it does not, it says so and lets you
+     (portal.auth == "password" and portal.passphrase_enabled). If it does not, it says so and lets you
      pick again. If the API call itself fails, it reports the HTTP error
      instead (retry, or exit 3) rather than blaming the SSID.
   5. Asks whether to keep a JSON backup of the WLAN before each change.
@@ -431,7 +431,9 @@ def choose_guest_wlan(cfg: dict, template: dict) -> dict:
         portal = w.get("portal") or {}
         auth = portal.get("auth", "none")
         enabled = "enabled" if w.get("enabled", True) else "disabled"
-        guest_tag = "  <-- guest password portal" if auth == "password" else ""
+        guest_tag = ("  <-- guest password portal"
+                     if auth == "password" and portal.get("passphrase_enabled") is True
+                     else "")
         print(f"  {i:>2}. {w.get('ssid', '(no ssid)'):24} "
               f"[portal.auth={auth}, {enabled}]{guest_tag}")
 
@@ -444,9 +446,14 @@ def choose_guest_wlan(cfg: dict, template: dict) -> dict:
             continue
         portal = detail.get("portal") or {}
         auth = portal.get("auth")
-        if auth == "password":
+        if auth == "password" and portal.get("passphrase_enabled") is True:
             print(f"  Validated: '{chosen.get('ssid')}' is a guest password portal.")
             return chosen
+        if auth == "password":
+            print(f"  '{chosen.get('ssid')}' is NOT usable: portal.passphrase_enabled "
+                  f"is {portal.get('passphrase_enabled')!r}, so guests are not asked "
+                  f"for the portal password. Pick another.")
+            continue
         print(f"  '{chosen.get('ssid')}' is NOT a guest portal SSID "
               f"(portal.auth is {auth!r}, expected 'password'). Pick another.")
 

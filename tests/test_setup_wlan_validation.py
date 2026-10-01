@@ -14,7 +14,7 @@ CFG = {"api_url": "https://api.mist.com", "token": "tok", "org_id": "org"}
 TEMPLATE = {"id": "tmpl"}
 WLANS = [
     {"id": "w1", "ssid": "Guest", "template_id": "tmpl",
-     "portal": {"auth": "password"}},
+     "portal": {"auth": "password", "passphrase_enabled": True}},
     {"id": "w2", "ssid": "Staff", "template_id": "tmpl",
      "portal": {"auth": "sso"}},
 ]

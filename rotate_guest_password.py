@@ -35,7 +35,8 @@ The API TOKEN is a secret and is NEVER written to any log or file here.
 Exit codes (for schedulers):
   0  success (password rotated, or dry-run completed)
   1  configuration / environment error (missing .env or fields)
-  2  validation error (WLAN is not a guest 'password' portal)
+  2  validation error (WLAN is not a guest 'password' portal, or
+     portal.passphrase_enabled is not true)
   3  Mist API / network error. A non-empty success body that is not
      JSON is this case (one ERROR line, no traceback, body omitted),
      including --dry-run. See README.md.
@@ -367,13 +368,34 @@ def put_portal_password(cfg: dict, portal: dict, new_password: str) -> dict:
 # Core logic
 # --------------------------------------------------------------------------- #
 
-def validate_guest_portal(wlan_obj: dict) -> None:
-    """Ensure this WLAN is a guest 'password' captive portal, else exit."""
+GUEST_WIFI_PASSWORD = "Guest WiFi password"
+PORTAL_PASSPHRASE = "captive-portal passphrase"
+
+
+def validate_guest_portal(wlan_obj: dict) -> str:
+    """Ensure this WLAN is a guest 'password' captive portal, else exit.
+
+    Returns what portal.password is for guests: GUEST_WIFI_PASSWORD on an
+    open SSID, otherwise PORTAL_PASSPHRASE (after warning that auth.psk is
+    left unchanged).
+    """
     portal = wlan_obj.get("portal") or {}
     auth = portal.get("auth")
     if auth != "password":
         _die(2, f"This is NOT a guest portal SSID: portal.auth is "
                 f"{auth!r}, expected 'password'. Aborting; nothing changed.")
+    if portal.get("passphrase_enabled") is not True:
+        _die(2, "portal.passphrase_enabled is not true, so guests are not "
+                "asked for portal.password. Enable the passphrase on the "
+                "portal in Mist first. Aborting; nothing changed.")
+    auth_type = (wlan_obj.get("auth") or {}).get("type")
+    if auth_type == "open":
+        return GUEST_WIFI_PASSWORD
+    print(f"WARNING: auth.type is {auth_type!r}, not 'open'. Only the "
+          f"captive-portal passphrase (portal.password) is rotated; the Wi-Fi "
+          f"passphrase in auth.psk was NOT changed and must not be replaced "
+          f"with the portal word.", file=sys.stderr)
+    return PORTAL_PASSPHRASE
 
 
 def generate_password() -> str:
@@ -398,17 +420,20 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
-def record_new_password(ssid: str, password: str, wlan_id: str = "") -> None:
+def record_new_password(ssid: str, password: str, wlan_id: str = "",
+                        kind: str = PORTAL_PASSPHRASE) -> None:
     """Persist the new (shareable) password to local files for staff.
 
     current_password.txt keeps the password on the first line, followed by
-    the SSID and WLAN id it belongs to so a leftover file is self-describing.
+    what kind of secret it is and the SSID and WLAN id it belongs to so a
+    leftover file is self-describing.
     It is replaced atomically and written before the history line, so the
     file staff read never lags behind the history.
     Raises OSError naming the file that could not be written.
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     content = (f"{password}\n"
+               f"# Kind: {kind}\n"
                f"# SSID: {ssid}\n"
                f"# WLAN ID: {wlan_id}\n"
                f"# Set: {timestamp}\n")
@@ -531,7 +556,7 @@ def main() -> None:
     ssid = wlan.get("ssid") or cfg["ssid"] or cfg["wlan_id"]
 
     # 2. Safety guard: must be a guest 'password' portal.
-    validate_guest_portal(wlan)
+    kind = validate_guest_portal(wlan)
 
     old_password = (wlan.get("portal") or {}).get("password")
     new_password = generate_password()
@@ -540,7 +565,7 @@ def main() -> None:
         new_password = generate_password()
 
     if args.dry_run:
-        print(f"[DRY RUN] SSID '{ssid}': would set new guest password -> {new_password}")
+        print(f"[DRY RUN] SSID '{ssid}': would set new {kind} -> {new_password}")
         print("[DRY RUN] No changes were sent to Mist.")
         sys.exit(0)
 
@@ -551,7 +576,7 @@ def main() -> None:
     # 4. Mist accepted the PUT, so the new password may now be live. Publish
     #    it on stdout before anything else can fail.
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] Guest WiFi password for SSID '{ssid}' updated.")
+    print(f"[{timestamp}] {kind[0].upper() + kind[1:]} for SSID '{ssid}' updated.")
     print(f"    New password: {new_password}", flush=True)
 
     # 5. Verify with a fresh GET. Do not trust the PUT echo.
@@ -563,7 +588,7 @@ def main() -> None:
 
     # 6. Record the new (shareable) password so staff can find it.
     try:
-        record_new_password(ssid, new_password, cfg["wlan_id"])
+        record_new_password(ssid, new_password, cfg["wlan_id"], kind)
     except OSError as e:
         _die(1, f"Mist now uses password '{new_password}' for SSID '{ssid}', "
                 f"but saving it locally failed: {e}")
