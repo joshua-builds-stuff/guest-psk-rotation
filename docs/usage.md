@@ -83,9 +83,37 @@ leave a new token or org next to the previous WLAN id.
 Setup never deletes `.env` and then renames a temp file over the gap. It
 writes `envwrite.<pid>.tmp`, `fsync`s, and replaces `.env`. If replace and
 the in-place overwrite both fail, the process exits **1** and the error names
-that temp file. The temp file has the new settings, including the API token.
-Move it to `.env` only after you can write in this folder, and do not leave
-it behind.
+that temp file. The temp file has the new settings, including the API token,
+and it is created mode `0o600`. Move it to `.env` only after you can write
+in this folder, and do not leave it behind.
+
+### Who can read the saved files
+
+On Unix, a finished setup leaves `.env` mode `0o600`: the owner can read and
+write it, and group and other users cannot. `envwrite.<pid>.tmp` is created
+with that same mode. The mode is set again with `chmod`, so a permissive
+umask does not leave the token readable by other accounts on the machine.
+
+On Windows, `os.chmod` is best-effort and an error from `chmod` is ignored.
+Set a filesystem ACL so only the account that runs setup and rotation can
+read `.env`, `envwrite.*.tmp`, `current_password.txt`,
+`password_history.log`, and any `backups/*.json`.
+
+A successful rotation uses the same mode for `current_password.txt`,
+`current_password.txt.<pid>.tmp`, `password_history.log`, and each new file
+under `backups/` when backups are on. Appending the history log tightens a
+log that was created earlier with a looser mode. Setup's STALE rewrite uses
+the same `0o600` writer for `current_password.txt`.
+
+The next successful setup tightens `.env`, including when you keep the same
+WLAN. The next successful rotation tightens `current_password.txt` and
+`password_history.log`. A `--dry-run` leaves those modes unchanged. JSON
+files already in `backups/` keep the mode they were created with.
+
+`rotate.log` from the cron line below is created by the shell. Restrict it
+yourself. `rotate.lock` keeps the process's normal create mode; its text is
+a pid and a start time. The file list is in
+[SECURITY.md](../SECURITY.md#local-file-modes).
 
 ## Dry run
 
@@ -179,8 +207,8 @@ schtasks /Create /TN "Guest WiFi Rotate" /SC DAILY /ST 06:00 ^
 0 6 * * *  /usr/bin/python3 /path/to/rotate_guest_password.py >> /path/to/rotate.log 2>&1
 ```
 
-`rotate.log` will contain guest passwords. Restrict that file the same way
-you restrict `current_password.txt`.
+`rotate.log` will contain guest passwords. Restrict that file yourself;
+the rotation script sets modes only on the files it writes.
 
 Treat exit codes as in the table below. Overlapping real runs are serialized
 by the lock: the second exits **1** and must not be retried in a tight loop
