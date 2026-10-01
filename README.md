@@ -144,6 +144,12 @@ If the write still fails, setup exits **1** and the `ERROR:` line names
 token). The same writer is used when a WLAN switch replaces
 `current_password.txt` with a STALE notice.
 
+That writer opens `envwrite.<pid>.tmp` with mode `0o600` and `chmod`s the
+temp file and `.env` to `0o600`. On Unix only the owner can read the token,
+even when the process umask is permissive. On Windows, `chmod` is
+best-effort; set a filesystem ACL so other users cannot read `.env` and
+`envwrite.*.tmp`. See [SECURITY.md](SECURITY.md#local-file-modes).
+
 The result is saved to `.env`:
 
 ```
@@ -236,6 +242,13 @@ rainbow
 Because the guest password is meant to be shared with visitors, it is stored in
 plaintext in those files on purpose. The **API token is never** logged.
 
+`current_password.txt`, its temp file `current_password.txt.<pid>.tmp`,
+`password_history.log`, and each new `backups/*.json` are opened with mode
+`0o600` and then `chmod`ed to `0o600`. An existing history log is tightened
+when a line is appended. On Windows, set ACLs; `chmod` does not take the
+place of an ACL. A log your scheduler creates is a separate file. See
+[SECURITY.md](SECURITY.md#local-file-modes).
+
 If the confirming GET fails, or `portal.password` does not match, the process
 exits **3** after the password is already on stdout. Local password files are
 left as they were. The mismatch line includes the submitted password:
@@ -275,6 +288,8 @@ schtasks /Create /TN "Guest WiFi Rotate" /SC DAILY /ST 06:00 ^
 ```
 
 That log receives stdout and stderr, so it will contain guest passwords.
+Restrict `rotate.log` yourself; the script sets modes only on the files it
+writes. On Windows, set a filesystem ACL on `.env` and the password files.
 
 Staff can read the current password any time from `current_password.txt`.
 The password is on the first line; the lines below it name the SSID and WLAN ID
@@ -400,13 +415,13 @@ the call, it exits **3**.
 | `setup_guest_wlan.py` | One-time interactive setup |
 | `rotate_guest_password.py` | Unattended password rotation |
 | `docs/usage.md` | Operator steps |
-| `SECURITY.md` | Token, password files, lock, `.env` writes, portal PUT |
-| `.env` | API token, org id, and selected WLAN, written together under `rotate.lock` (created by setup; never deleted before a replacement is written) |
+| `SECURITY.md` | Token, password files, file modes, lock, `.env` writes, portal PUT |
+| `.env` | API token, org id, and selected WLAN, written together under `rotate.lock` (created by setup; never deleted before a replacement is written). Mode `0o600` on that write |
 | `.env.example` | Reference for the env format |
-| `current_password.txt` | Latest guest password on line 1, then SSID / WLAN ID / time (created on first rotate; replaced with a STALE notice if setup switches WLANs) |
-| `password_history.log` | Timestamped history (created on first rotate; a `TARGET WLAN CHANGED` marker is appended when setup switches WLANs) |
-| `backups/` | Pre-change WLAN JSON snapshots (only if backups enabled) |
-| `rotate.lock` | Exclusive lock held for a real rotation and for setup's one `.env` write (`fcntl` / `msvcrt`). A second rotation, or setup while a rotation holds it, exits 1. Not taken on `--dry-run` |
+| `current_password.txt` | Latest guest password on line 1, then SSID / WLAN ID / time (created on first rotate; replaced with a STALE notice if setup switches WLANs). Mode `0o600` when rotation or the STALE writer saves it |
+| `password_history.log` | Timestamped history (created on first rotate; a `TARGET WLAN CHANGED` marker is appended when setup switches WLANs). Mode `0o600` when a line is appended |
+| `backups/` | Pre-change WLAN JSON snapshots (only if backups enabled). Each new JSON file is mode `0o600`; the directory is not |
+| `rotate.lock` | Exclusive lock held for a real rotation and for setup's one `.env` write (`fcntl` / `msvcrt`). A second rotation, or setup while a rotation holds it, exits 1. Not taken on `--dry-run`. Pid and start time only; normal create mode |
 
 ## Deployment & review notes
 

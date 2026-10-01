@@ -50,9 +50,61 @@ temp file contains the same keys as `.env`, including `MIST_API_TOKEN`. Treat
 it as a secret: move it into place or delete it, and do not commit it.
 `.gitignore` does not list `envwrite.*.tmp` by name; it does ignore `.env`.
 
-Secret files and replacement temp files are created with mode `0o600`, and
-existing files are tightened on write. On Windows `os.chmod` is best-effort;
-configure filesystem ACLs separately to restrict access.
+On Unix those files are mode `0o600`. See [Local file modes](#local-file-modes).
+
+## Local file modes
+
+Secret files and their replacement temp files are opened with mode `0o600`
+and then `chmod`ed to `0o600`. On Unix the result is owner read and write
+only. Group and other users cannot read them, including when the process
+umask would otherwise leave a new file group- or world-readable. When one
+of the writes below rewrites or appends a file that already exists, that
+file is tightened to `0o600` as well. A file this run does not touch keeps
+its previous mode.
+
+The writes that set mode `0o600`:
+
+- `.env`, on setup's one locked write of the API token, org id, and WLAN id.
+- `envwrite.<pid>.tmp`, the temp file that writer uses before it replaces
+  `.env` or a STALE `current_password.txt`.
+- `current_password.txt`, when a rotation replaces it, and when setup writes
+  the STALE notice (only if that file already exists and the WLAN id changes).
+- `current_password.txt.<pid>.tmp`, rotation's temp file for that replace.
+- `password_history.log`, when a rotation creates or appends it, and when
+  setup appends the `TARGET WLAN CHANGED` marker (only if the log already
+  exists).
+- `backups/*.json`, each new pre-change backup, when backups are enabled.
+
+The `backups/` directory uses the process's normal directory mode
+(`mkdir`). Each new JSON file inside it is `0o600`. JSON already in `backups/` is left as it
+is, so an older backup keeps the mode it was created with. Remove or
+replace those older files if other accounts on the host should not read
+them.
+
+After an upgrade, the next successful setup tightens `.env`. The next
+successful rotation tightens `current_password.txt` and
+`password_history.log`. A later setup that keeps the same WLAN id does not
+rewrite those two password files, so their modes stay as they were until a
+rotation or a WLAN change writes them. A `--dry-run` leaves their modes
+unchanged.
+
+`rotate.lock` is still created with the process's normal file mode. The
+line stored there is a pid and a start time.
+
+On Windows, `os.chmod` is best-effort: an `OSError` from `chmod` is ignored.
+Set filesystem ACLs so only the account that runs setup and rotation can
+read `.env`, `envwrite.*.tmp`, `current_password.txt`,
+`password_history.log`, and backup JSON.
+
+A scheduler log such as `rotate.log` in the cron example is a file the
+shell creates. These scripts set the mode only of the files they write.
+Restrict `rotate.log` yourself; it receives guest passwords on stdout.
+
+On Unix, a failed `chmod` fails that write. If it fails while setup is
+finishing `.env` or the STALE file, setup exits **1**. If it fails while
+rotation is saving `current_password.txt` or appending
+`password_history.log` after Mist has accepted the password, rotation exits
+**1** and stderr repeats that password (`saving it locally failed`).
 
 ## Plaintext guest passwords
 
@@ -68,8 +120,10 @@ store it in plaintext on purpose:
   are enabled (off unless `MIST_BACKUP_JSON` is true or you pass `--backup`)
 
 `.gitignore` ignores `current_password.txt`, `password_history.log`, and
-`backups/`. A scheduler that appends stdout to a log (the cron example in
-the README redirects to `rotate.log`) copies the password into that log.
+`backups/`. Those files are mode `0o600` on Unix when the scripts write
+them. See [Local file modes](#local-file-modes). A scheduler that appends
+stdout to a log (the cron example in the README redirects to `rotate.log`)
+copies the password into that log. The scripts do not set that log's mode.
 
 When setup switches to a different WLAN, it rewrites `current_password.txt`
 (if the file exists) so the old password is no longer in that file. The
@@ -104,14 +158,18 @@ without touching `current_password.txt`, if `MIST_WLAN_ID` changed.
 Updates go through one writer. It never deletes `.env` before the new bytes
 are on disk. Sequence:
 
-1. Write `envwrite.<pid>.tmp` (a name that does not start with a dot), flush,
-   and `fsync`.
-2. `os.replace` that temp file onto the destination.
+1. Write `envwrite.<pid>.tmp` (a name that does not start with a dot) with
+   mode `0o600`, `chmod` it to `0o600`, flush, and `fsync`.
+2. `os.replace` that temp file onto the destination. On success, `chmod`
+   the destination to `0o600` and return.
 3. On `PermissionError`, clear the Windows hidden attribute
-   (`SetFileAttributesW` with `FILE_ATTRIBUTE_NORMAL`) and `os.replace` again.
-   On other platforms that step is a no-op.
-4. If replace still fails and the destination already exists, overwrite it
-   in place: open `r+`, seek to the start, write, truncate, flush, `fsync`.
+   (`SetFileAttributesW` with `FILE_ATTRIBUTE_NORMAL`) and `os.replace`
+   again. On success, `chmod` the destination to `0o600` and return. On
+   other platforms the attribute clear is a no-op.
+4. If replace still fails and the destination already exists, `chmod` the
+   destination to `0o600`, then overwrite it in place: open `r+`, seek to
+   the start, write, truncate, flush, `fsync`, and `chmod` to `0o600`
+   again.
 5. Delete the temp file only after the new contents are in the destination.
 
 There is no delete-and-then-rename fallback. If every step fails, setup
@@ -120,9 +178,10 @@ when replace never succeeded, and the error names the temp file that holds
 the new copy.
 
 The same writer replaces `current_password.txt` with the STALE notice.
-Rotation's writer for a successful password is separate: it uses
-`current_password.txt.<pid>.tmp`, `fsync`, and `os.replace`, and it deletes
-that temp file if the replace fails. It does not delete
+Rotation's writer for a successful password is separate: it opens
+`current_password.txt.<pid>.tmp` with mode `0o600`, `chmod`s that temp
+file, `fsync`s, `os.replace`s it, then `chmod`s `current_password.txt` to
+`0o600`. It deletes that temp file if the replace fails. It does not delete
 `current_password.txt` first.
 
 ## Portal-only PUT

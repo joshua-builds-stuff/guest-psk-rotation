@@ -120,3 +120,25 @@ Python 3.8+, no `pip` install, and the `.env` keys are unchanged.
   ([#29](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/29)).
 
 Python 3.8+, no `pip` install, and the `.env` key names are unchanged.
+
+## 2026-10-01
+
+**Revision: minor**
+
+### Fixed
+
+- Setup and rotation write the Mist API token and the local guest-password
+  files as mode `0o600`, then `chmod` them to `0o600`, so a permissive Unix
+  umask cannot leave them group- or world-readable. That covers `.env`,
+  `envwrite.<pid>.tmp`, `current_password.txt`,
+  `current_password.txt.<pid>.tmp`, `password_history.log` (including an
+  append), and each new `backups/*.json`. An existing file is tightened
+  when one of those writes rewrites or appends it. Files the run does not
+  touch, including JSON already in `backups/` and a scheduler log such as
+  `rotate.log`, keep their previous mode. `rotate.lock` still uses the
+  process's normal create mode (pid and start time only). On Windows,
+  `os.chmod` is best-effort; set filesystem ACLs so other users cannot
+  read these files. Install is unchanged (Python 3.8+, standard library
+  only). `.env` key names are unchanged.
+  [#35](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/35)
+  ([#1](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/1)).
