@@ -403,15 +403,27 @@ def generate_password() -> str:
     return secrets.choice(_WORDS)
 
 
+def _chmod_secret(path: Path) -> None:
+    """Restrict an existing secret file (best effort on Windows)."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        if os.name != "nt":
+            raise
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     """Write `content` to a temp file, then os.replace() it over `path`."""
     tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with os.fdopen(os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600),
+                       "w", encoding="utf-8") as f:
+            _chmod_secret(tmp)
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
+        _chmod_secret(path)
     except OSError:
         try:
             tmp.unlink()
@@ -442,8 +454,13 @@ def record_new_password(ssid: str, password: str, wlan_id: str = "",
     except OSError as e:
         raise OSError(f"could not write {CURRENT_PASSWORD_FILE}: {e}") from e
     try:
-        with open(HISTORY_LOG, "a", encoding="utf-8") as f:
+        if HISTORY_LOG.exists():
+            _chmod_secret(HISTORY_LOG)
+        with os.fdopen(os.open(HISTORY_LOG, os.O_CREAT | os.O_WRONLY | os.O_APPEND,
+                               0o600), "a", encoding="utf-8") as f:
+            _chmod_secret(HISTORY_LOG)
             f.write(f"{timestamp}\t{ssid}\t{password}\n")
+        _chmod_secret(HISTORY_LOG)
     except OSError as e:
         raise OSError(f"could not append {HISTORY_LOG}: {e}") from e
 
@@ -454,8 +471,11 @@ def save_backup(ssid: str, wlan_obj: dict) -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     safe_ssid = "".join(c if c.isalnum() else "_" for c in (ssid or "wlan"))
     path = BACKUP_DIR / f"{safe_ssid}_{stamp}.json"
-    with open(path, "w", encoding="utf-8") as f:
+    with os.fdopen(os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600),
+                   "w", encoding="utf-8") as f:
+        _chmod_secret(path)
         json.dump(wlan_obj, f, indent=2)
+    _chmod_secret(path)
     return path
 
 
