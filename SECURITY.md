@@ -113,8 +113,9 @@ store it in plaintext on purpose:
 
 - stdout, on the line `New password: <word>`, flushed as soon as the password
   PUT returns HTTP 200 with a JSON object
-- `current_password.txt`, word on line 1, then `# SSID:`, `# WLAN ID:`, and
-  `# Set:` lines
+- `current_password.txt`, word on line 1, then `# Kind:` (`Guest WiFi password`
+  when `auth.type` is `open`, otherwise `captive-portal passphrase`),
+  `# SSID:`, `# WLAN ID:`, and `# Set:` lines
 - `password_history.log`, `timestamp<TAB>SSID<TAB>password`
 - `backups/*.json`, inside the WLAN `portal.password` field, when backups
   are enabled (off unless `MIST_BACKUP_JSON` is true or you pass `--backup`)

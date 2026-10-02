@@ -142,3 +142,42 @@ Python 3.8+, no `pip` install, and the `.env` key names are unchanged.
   only). `.env` key names are unchanged.
   [#35](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/35)
   ([#1](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/1)).
+
+## 2026-10-02
+
+**Revision: minor**
+
+### Fixed
+
+- `rotate_guest_password.py` exits **2**, including on `--dry-run`, when
+  `portal.passphrase_enabled` is not exactly true. A missing flag counts as
+  not true. Nothing is PUT and no local password file is written. The script
+  does not enable the flag. `setup_guest_wlan.py` accepts a SSID only when
+  the single-WLAN GET has `portal.auth == "password"` and
+  `passphrase_enabled` exactly true. The list tag
+  ` <-- guest password portal` uses those same two fields on the list row.
+  A password portal with the flag off prints `NOT usable` and asks you to
+  pick again.
+  [#34](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/34)
+  ([#10](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/10)).
+
+- The success line, the dry-run line, and `# Kind:` in `current_password.txt`
+  say **Guest WiFi password** only when `auth.type` is `open`. Otherwise they
+  say **captive-portal passphrase** (the success line capitalizes the first
+  letter). If `auth.type` is not `open`, including when it is missing,
+  rotation prints a WARNING that `auth.psk` was not changed and must not be
+  replaced with the portal word, then still rotates only `portal.password`.
+  [#34](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/34)
+  ([#10](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/10)).
+
+- If reading the body of a Mist HTTP error fails with `OSError` or
+  `http.client.HTTPException` (for example `IncompleteRead` or
+  `ConnectionResetError`), both scripts treat it as a connection error and
+  exit **3** (`ERROR: Connection error reaching Mist API: ...`): one line,
+  no traceback. They do not return that HTTP status. An HTTP error body that
+  is read and is not JSON is unchanged. During setup's credential check the
+  same failure is `Validation failed:` and can be retried.
+  [#27](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/27)
+  ([#23](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/23)).
+
+Python 3.8+, no `pip` install, and the `.env` key names are unchanged.
