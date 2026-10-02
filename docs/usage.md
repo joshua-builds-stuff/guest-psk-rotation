@@ -23,10 +23,12 @@ The prompts are:
    and org id stay in memory until the locked write at the end of setup,
    which stores them with the WLAN id. See [Lock file](#lock-file).
 2. A **Wireless LAN Template**, numbered from the full org list.
-3. The **guest SSID** in that template. Rows tagged
-   ` <-- guest password portal` already show `portal.auth=password` on the
-   list. Setup still GETs that WLAN and accepts it only when the GET body is
-   an object whose `portal.auth` is `password`.
+3. The **guest SSID** in that template. A row is tagged
+   ` <-- guest password portal` only when that list row has
+   `portal.auth=password` and `passphrase_enabled` exactly true. Setup still
+   GETs that WLAN and accepts it only when the GET body is an object whose
+   `portal.auth` is `password` and whose `portal.passphrase_enabled` is
+   exactly true. It does not turn the passphrase on for you.
 4. Whether to save a JSON backup before each password change. Empty input
    means **no** (`MIST_BACKUP_JSON=false`).
 
@@ -72,6 +74,7 @@ leave a new token or org next to the previous WLAN id.
 | What you see | What to do |
 |--------------|------------|
 | `NOT a guest portal SSID` and a `portal.auth` value | The GET succeeded. Pick a WLAN whose portal auth is `password`. |
+| `NOT usable` and a `portal.passphrase_enabled` value | The GET succeeded and `portal.auth` is `password`, but the passphrase flag is missing or not exactly true. Guests are not asked for `portal.password`. Pick another SSID, or enable the passphrase in Mist and run setup again. The script does not set the flag. |
 | `Could not validate '...': Mist API error (HTTP 401)` or `HTTP 403`, then `ERROR: the API token was rejected...` | Exit **3**. The SSID was not rejected. Fix the token and run setup again. |
 | `HTTP 404` and `The WLAN was not found` | Pick another SSID from the list. |
 | `HTTP 429`, `HTTP 500`, or another HTTP status, then `Retry validating this SSID? [Y/n]` | Default is yes. Answering **no** exits **3** (`could not validate the chosen SSID; setup not completed`). |
@@ -131,8 +134,15 @@ What it does:
   not one of the twelve clouds).
 - Does **not** lock `rotate.lock`.
 - GETs the configured WLAN.
-- Exits **2** if `portal.auth` is not `password`.
+- Exits **2** if `portal.auth` is not `password`, or if `portal.auth` is
+  `password` but `portal.passphrase_enabled` is missing or not exactly true.
+  Nothing is PUT. The passphrase flag is not turned on.
+- If those checks pass and `auth.type` is not `open` (missing counts as not
+  open), prints a WARNING on stderr that `auth.psk` was not changed. It
+  still does not change Mist.
 - Prints the word it would set, then `[DRY RUN] No changes were sent to Mist.`
+  The line says `would set new Guest WiFi password` only when `auth.type` is
+  `open`. Otherwise it says `would set new captive-portal passphrase`.
 - Exits **0**.
 
 It does not write `current_password.txt` or `password_history.log`. A timeout
@@ -155,6 +165,12 @@ What you should see on success:
     Recorded in:  current_password.txt and password_history.log
 ```
 
+That first line says `Guest WiFi password` only when `auth.type` is `open`.
+Otherwise it says `Captive-portal passphrase`. If `auth.type` is not `open`,
+stderr also has a WARNING that only `portal.password` was rotated and that
+`auth.psk` was not changed. Do not replace the Wi-Fi passphrase in Mist with
+the portal word. The run still exits **0** when the rest succeeds.
+
 If backups are on, a third line names the JSON file under `backups/`.
 
 Give guests the word on the `New password:` line, or the **first line** of
@@ -162,13 +178,16 @@ Give guests the word on the `New password:` line, or the **first line** of
 
 ```
 rainbow
+# Kind: Guest WiFi password
 # SSID: Guest-WiFi
 # WLAN ID: <MIST_WLAN_ID>
 # Set: 2026-09-28 06:00:00
 ```
 
-The `#` lines are labels, not part of the password. `password_history.log`
-appends `timestamp<TAB>SSID<TAB>password`.
+When `auth.type` is not `open`, the Kind line is
+`# Kind: captive-portal passphrase`. The `#` lines are labels, not part of
+the password. `password_history.log` appends
+`timestamp<TAB>SSID<TAB>password` and does not include the kind.
 
 The password line is flushed as soon as Mist accepts the PUT, before the
 script GETs the WLAN again and before it writes those files. Keep the
@@ -251,7 +270,7 @@ writes its own pid line.
 |------|----------------------------|------------------------|
 | 0 | Password rotated, or `--dry-run` finished | Setup finished and printed `SETUP COMPLETE` |
 | 1 | Bad or missing `.env`, API host not a Mist cloud, lock busy, local password file failed after Mist accepted the password, or Ctrl-C | Credential prompt cancelled, a rotation holds `rotate.lock` (credentials and the WLAN were not saved), `.env` / STALE write failed, or Ctrl-C |
-| 2 | `portal.auth` is not `password`. Nothing was PUT | Not used |
+| 2 | `portal.auth` is not `password`, or `portal.passphrase_enabled` is not exactly true. Nothing was PUT | Not used |
 | 3 | Mist HTTP error, timeout (30s), connection error, non-JSON success body, or read-back mismatch | Same Mist failures on later steps; list-page failure; 401/403 while reading the chosen WLAN; validation retry declined |
 
 Timeout text, both scripts:
@@ -268,6 +287,13 @@ ERROR: Mist API returned a non-JSON response (HTTP 200) for GET /orgs/<org-id>/w
 
 During setup's credential prompt, that same failure is prefixed
 `Validation failed:` and can be retried.
+
+A failed read of an HTTP error body (`OSError` or
+`http.client.HTTPException`, such as `IncompleteRead` or
+`ConnectionResetError`) is the connection-error path above, not the HTTP
+status. One `ERROR: Connection error reaching Mist API: ...` line, exit
+**3**, no traceback. An HTTP error body that is read, including one that is
+not JSON, still uses that HTTP status.
 
 ## After setup changes the WLAN
 
@@ -299,8 +325,10 @@ python rotate_guest_password.py
 ```
 
 Wait until you see `Recorded in:`. The first line of `current_password.txt`
-should be a single word again, and the `# SSID:` / `# WLAN ID:` lines should
-match the new guest network. Hand that word out.
+should be a single word again. `# Kind:` says `Guest WiFi password` only
+when the new WLAN's `auth.type` is `open`; otherwise it says
+`captive-portal passphrase`. The `# SSID:` / `# WLAN ID:` lines should match
+the new guest network. Hand that word out. Do not copy it into `auth.psk`.
 
 Choosing the **same** WLAN id on a later setup leaves both password files
 as they are. A first-time setup, with no previous `MIST_WLAN_ID`, does not

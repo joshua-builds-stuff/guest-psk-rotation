@@ -58,8 +58,9 @@ You'll be asked for:
    (see [Writing `.env`](#writing-env)).
 2. A **Wireless LAN Template** (pick from the list found in your org).
 3. The **guest SSID** inside that template. The script confirms with the API
-   that the SSID really is a guest captive portal (`portal.auth == "password"`).
-   If it isn't, it tells you and lets you pick again.
+   that the SSID is a guest captive portal (`portal.auth == "password"` and
+   `portal.passphrase_enabled` is exactly true). If it isn't, it tells you
+   and lets you pick again. It does not turn the passphrase on for you.
 4. Whether to keep a **JSON backup** of the WLAN before each change (default: no).
 
 ### Paging templates and WLANs
@@ -85,11 +86,20 @@ An empty template list, or a template with no SSIDs, also exits **3**.
 
 ### Checking the chosen SSID
 
-After you pick a number, setup GETs that WLAN
-(`GET /api/v1/orgs/{org_id}/wlans/{wlan_id}`) and uses that response, not the
-list row.
+On the list, a row is tagged ` <-- guest password portal` only when that
+list row already has `portal.auth` of `password` and `passphrase_enabled`
+exactly true. Acceptance does not use the list row.
 
-- HTTP 200 and `portal.auth == "password"`: accepted.
+After you pick a number, setup GETs that WLAN
+(`GET /api/v1/orgs/{org_id}/wlans/{wlan_id}`) and uses that response.
+
+- HTTP 200, `portal.auth == "password"`, and `portal.passphrase_enabled` is
+  exactly true: accepted (`Validated: '...' is a guest password portal.`).
+- HTTP 200 and `portal.auth == "password"`, but `passphrase_enabled` is
+  missing or not exactly true: it prints `NOT usable` with the actual
+  `portal.passphrase_enabled` value (`so guests are not asked for the portal
+  password`) and lets you pick again. Nothing is written, and the flag is
+  not set.
 - HTTP 200 and `portal.auth` is something else: it prints `NOT a guest portal`
   with the actual `portal.auth` value and lets you pick again.
 - HTTP 200 whose body is not a WLAN object (`unexpected response body`): it
@@ -187,9 +197,11 @@ Test first without changing anything:
 python rotate_guest_password.py --dry-run
 ```
 
-`--dry-run` still reads `.env`, GETs the WLAN, and checks `portal.auth`. It
-prints the word it would set and exits **0**. It does not PUT, does not take
-`rotate.lock`, and does not write `current_password.txt` or
+`--dry-run` still reads `.env`, GETs the WLAN, and runs the same portal
+checks as a real rotation (`portal.auth` must be `password`, and
+`portal.passphrase_enabled` must be exactly true). It prints the word it
+would set and exits **0**. It does not PUT, does not take `rotate.lock`,
+does not change `auth.psk`, and does not write `current_password.txt` or
 `password_history.log`.
 
 Then rotate for real:
@@ -200,8 +212,10 @@ python rotate_guest_password.py
 
 A real run takes `rotate.lock` first (see below). On success it:
 
-1. GETs the WLAN and checks it is still a guest `password` portal (exit **2**
-   if not; Mist is unchanged).
+1. GETs the WLAN and checks it is still a guest `password` portal with
+   `portal.passphrase_enabled` exactly true (exit **2** if not; Mist is
+   unchanged, and the passphrase flag is not turned on). If `auth.type` is
+   not `open`, it prints a WARNING that only `portal.password` will change.
 2. Picks one random school-safe word, and picks again if that word is the
    portal password just read.
 3. Optionally saves a JSON backup of that GET under `backups/` (only if you
@@ -220,6 +234,10 @@ A real run takes `rotate.lock` first (see below). On success it:
        New password: rainbow
    ```
 
+   That first line says `Guest WiFi password` only when `auth.type` is
+   `open`. Otherwise it says `Captive-portal passphrase`. The word itself
+   is unchanged. See [What the word is](#what-the-word-is).
+
 6. GETs the WLAN again and compares `portal.password` to the word it sent. It
    does not treat the PUT response body as confirmation.
 7. Writes `current_password.txt` (atomically), then appends
@@ -227,14 +245,42 @@ A real run takes `rotate.lock` first (see below). On success it:
 
 `current_password.txt` is replaced by writing `current_password.txt.<pid>.tmp`
 in this folder, flushing, `fsync`ing, and `os.replace`. The password is the
-first line; the lines under it name the SSID, WLAN id, and local time:
+first line; the lines under it name the kind of secret, the SSID, WLAN id,
+and local time:
 
 ```
 rainbow
+# Kind: Guest WiFi password
 # SSID: Guest-WiFi
 # WLAN ID: 00000000-0000-0000-0000-000000000000
 # Set: 2026-09-28 06:00:00
 ```
+
+If `auth.type` is not `open`, the Kind line is
+`# Kind: captive-portal passphrase`.
+
+### What the word is
+
+The success line, the dry-run line, and `# Kind:` in `current_password.txt`
+name the secret guests type. The password stays a single school-safe word
+either way. `password_history.log` does not include the kind; it is still
+`timestamp`, SSID, password.
+
+- `auth.type` is `open` (and the portal checks passed): **Guest WiFi
+  password**. Success text starts with `Guest WiFi password for SSID`.
+  Dry-run text is `would set new Guest WiFi password`.
+- `auth.type` is anything else, including missing: **captive-portal
+  passphrase**. Success text starts with `Captive-portal passphrase for
+  SSID`. Dry-run text is `would set new captive-portal passphrase`. Stderr
+  gets one WARNING before the password is printed:
+
+  ```
+  WARNING: auth.type is 'psk', not 'open'. Only the captive-portal passphrase (portal.password) is rotated; the Wi-Fi passphrase in auth.psk was NOT changed and must not be replaced with the portal word.
+  ```
+
+  A missing `auth.type` is printed as `None`, not as `'psk'`. The run still
+  continues and, on success, exits **0**. It rotates only `portal.password`.
+  It does not PUT `auth.psk`, and it does not set `passphrase_enabled`.
 
 `password_history.log` gains one tab-separated line:
 `timestamp`, SSID, password.
@@ -292,8 +338,8 @@ Restrict `rotate.log` yourself; the script sets modes only on the files it
 writes. On Windows, set a filesystem ACL on `.env` and the password files.
 
 Staff can read the current password any time from `current_password.txt`.
-The password is on the first line; the lines below it name the SSID and WLAN ID
-it belongs to. If you re-run setup and pick a different WLAN, setup replaces
+The password is on the first line; the lines below it name the kind of
+secret, the SSID, and the WLAN ID it belongs to. If you re-run setup and pick a different WLAN, setup replaces
 the file with a **STALE** notice (and adds a marker to `password_history.log`)
 until the next rotation publishes a password for the new SSID.
 
@@ -357,7 +403,7 @@ python -c "import rotate_guest_password as r; w=r._WORDS; print(len(w),'words; s
 |------|---------|
 | 0 | Success (or `--dry-run` completed) |
 | 1 | Local or configuration error (see below) |
-| 2 | The WLAN is not a guest `password` portal (rotation aborts; Mist is unchanged) |
+| 2 | The WLAN is not a guest `password` portal, or `portal.passphrase_enabled` is not exactly true (rotation aborts; Mist is unchanged) |
 | 3 | Mist API / network error (see below) |
 
 **Exit 1** from `rotate_guest_password.py` covers a missing or invalid `.env`,
@@ -371,7 +417,15 @@ attempt (`Try again?` answered no), a rotation holding `rotate.lock`
 are not written), a failed `.env` or STALE-file write (`EnvWriteError`, the
 message names `envwrite.<pid>.tmp`), and Ctrl-C (`Cancelled.`).
 
-**Exit 2** is only the rotation script, when `portal.auth` is not `password`.
+**Exit 2** is only the rotation script, including `--dry-run`. Nothing is
+PUT and no local password file is written. The script does not enable the
+passphrase.
+
+- `portal.auth` is not `password`:
+  `ERROR: This is NOT a guest portal SSID: portal.auth is ..., expected 'password'. Aborting; nothing changed.`
+- `portal.auth` is `password` but `portal.passphrase_enabled` is missing or
+  not exactly true:
+  `ERROR: portal.passphrase_enabled is not true, so guests are not asked for portal.password. Enable the passphrase on the portal in Mist first. Aborting; nothing changed.`
 
 **Exit 3** is a Mist or network failure. Both scripts use a 30 second timeout
 (`API_TIMEOUT`). `TimeoutError` and `socket.timeout` become a `RuntimeError`
@@ -384,6 +438,13 @@ ERROR: Timed out after 30s waiting for the Mist API to respond.
 `URLError`, `OSError`, and `http.client.HTTPException` raised during the call
 use the same exit **3** path, with
 `ERROR: Connection error reaching Mist API: ...`.
+
+If reading the body of an HTTP **error** response fails with `OSError` or
+`http.client.HTTPException` (for example `IncompleteRead` or
+`ConnectionResetError`), both scripts raise that same connection error and
+exit **3**: one `ERROR:` line, no traceback. They do not return that HTTP
+status. An HTTP error whose body is read successfully is unchanged, including
+a body that is not JSON.
 
 A Mist **success** response (for example HTTP 200) whose body is not empty and
 is not JSON is exit **3**, including during `--dry-run`. That includes an HTML
@@ -418,7 +479,7 @@ the call, it exits **3**.
 | `SECURITY.md` | Token, password files, file modes, lock, `.env` writes, portal PUT |
 | `.env` | API token, org id, and selected WLAN, written together under `rotate.lock` (created by setup; never deleted before a replacement is written). Mode `0o600` on that write |
 | `.env.example` | Reference for the env format |
-| `current_password.txt` | Latest guest password on line 1, then SSID / WLAN ID / time (created on first rotate; replaced with a STALE notice if setup switches WLANs). Mode `0o600` when rotation or the STALE writer saves it |
+| `current_password.txt` | Latest guest password on line 1, then `# Kind:`, SSID, WLAN ID, and time (created on first rotate; replaced with a STALE notice if setup switches WLANs). Mode `0o600` when rotation or the STALE writer saves it |
 | `password_history.log` | Timestamped history (created on first rotate; a `TARGET WLAN CHANGED` marker is appended when setup switches WLANs). Mode `0o600` when a line is appended |
 | `backups/` | Pre-change WLAN JSON snapshots (only if backups enabled). Each new JSON file is mode `0o600`; the directory is not |
 | `rotate.lock` | Exclusive lock held for a real rotation and for setup's one `.env` write (`fcntl` / `msvcrt`). A second rotation, or setup while a rotation holds it, exits 1. Not taken on `--dry-run`. Pid and start time only; normal create mode |
@@ -459,7 +520,9 @@ configuration**, along with the relevant change-control process.
 > that belongs to a Wireless LAN Template (referenced by `MIST_WLAN_ID`). It does
 > not select an individual site; a template-derived WLAN applies wherever that
 > template is assigned. Only WLANs whose guest portal uses `portal.auth ==
-> "password"` are eligible — the scripts verify this and refuse anything else.
+> "password"` and `portal.passphrase_enabled` true are eligible — the scripts
+> verify this and refuse anything else. Rotation changes `portal.password`
+> only. It does not replace `auth.psk`.
 
 ## License
 
