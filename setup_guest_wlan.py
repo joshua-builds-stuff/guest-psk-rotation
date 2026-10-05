@@ -256,37 +256,96 @@ def read_env() -> dict:
     return env
 
 
+def _restore_published_password(previous: bytes, cause: BaseException) -> None:
+    """Put back the previous current_password.txt bytes after a failed switch."""
+    try:
+        if CURRENT_PASSWORD_FILE.read_bytes() == previous:
+            return
+    except OSError:
+        pass
+    tmp = CURRENT_PASSWORD_FILE.parent / f"pwrestore.{os.getpid()}.tmp"
+    try:
+        with os.fdopen(os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+                               | getattr(os, "O_BINARY", 0), 0o600), "wb") as f:
+            f.write(previous)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        raise EnvWriteError(
+            f"setup failed ({cause}) and {CURRENT_PASSWORD_FILE} could not be "
+            f"restored ({e}). It may say STALE, but .env still names the "
+            f"previous WLAN and its password is unchanged in Mist.") from e
+    try:
+        os.replace(tmp, CURRENT_PASSWORD_FILE)
+    except OSError as e:
+        raise EnvWriteError(
+            f"setup failed ({cause}) and {CURRENT_PASSWORD_FILE} could not be "
+            f"restored ({e}). .env still names the previous WLAN; the previous "
+            f"password file was kept in {tmp}; rename it to "
+            f"{CURRENT_PASSWORD_FILE.name}.") from e
+
+
 def invalidate_published_password(old_id: str, old_ssid: str,
-                                  new_id: str, new_ssid: str) -> bool:
+                                  new_id: str, new_ssid: str,
+                                  save=None) -> bool:
     """Mark the published password stale after the target WLAN changes.
 
     current_password.txt still holds the previous WLAN's password until the
     new WLAN is rotated, so replace it with a notice and add a marker to the
     history log. Returns True if anything was changed.
+
+    If `save` is given it is called after the notice is written and before
+    the marker is added. If it fails, current_password.txt is restored, the
+    history log is left alone, and the error is raised (OSError as
+    EnvWriteError). A failed marker append after `save` succeeded raises
+    EnvWriteError.
     """
     if not old_id or old_id == new_id:
+        if save is not None:
+            save()
         return False
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     old_label = f"'{old_ssid}' ({old_id})" if old_ssid else old_id
     new_label = f"'{new_ssid}' ({new_id})" if new_ssid else new_id
     changed = False
-    if CURRENT_PASSWORD_FILE.exists():
-        _atomic_write_text(CURRENT_PASSWORD_FILE, (
-            f"STALE - no current password for {new_label}.\n"
-            f"On {timestamp} setup changed the managed WLAN from {old_label} "
-            f"to {new_label}.\n"
-            f"The previous password must not be given to guests. Run "
-            f"rotate_guest_password.py to set a new one.\n"))
-        changed = True
+    previous = None
+    try:
+        if CURRENT_PASSWORD_FILE.exists():
+            previous = CURRENT_PASSWORD_FILE.read_bytes()
+            _atomic_write_text(CURRENT_PASSWORD_FILE, (
+                f"STALE - no current password for {new_label}.\n"
+                f"On {timestamp} setup changed the managed WLAN from {old_label} "
+                f"to {new_label}.\n"
+                f"The previous password must not be given to guests. Run "
+                f"rotate_guest_password.py to set a new one.\n"))
+            changed = True
+        if save is not None:
+            save()
+    except BaseException as e:
+        if previous is not None:
+            _restore_published_password(previous, e)
+        if isinstance(e, OSError) and not isinstance(e, EnvWriteError):
+            raise EnvWriteError(
+                f"setup did not save the new WLAN ({e}); .env and "
+                f"{CURRENT_PASSWORD_FILE.name} were left unchanged.") from e
+        raise
     if HISTORY_LOG.exists():
-        _chmod_secret(HISTORY_LOG)
-        with os.fdopen(os.open(HISTORY_LOG, os.O_CREAT | os.O_WRONLY | os.O_APPEND,
-                               0o600), "a", encoding="utf-8") as f:
+        try:
             _chmod_secret(HISTORY_LOG)
-            f.write(f"{timestamp}\t{new_ssid or new_id}\t"
-                    f"# TARGET WLAN CHANGED from {old_label} to {new_label}; "
-                    f"passwords above are for the previous WLAN\n")
-        _chmod_secret(HISTORY_LOG)
+            with os.fdopen(os.open(HISTORY_LOG, os.O_CREAT | os.O_WRONLY | os.O_APPEND,
+                                   0o600), "a", encoding="utf-8") as f:
+                _chmod_secret(HISTORY_LOG)
+                f.write(f"{timestamp}\t{new_ssid or new_id}\t"
+                        f"# TARGET WLAN CHANGED from {old_label} to {new_label}; "
+                        f"passwords above are for the previous WLAN\n")
+            _chmod_secret(HISTORY_LOG)
+        except OSError as e:
+            if save is None:
+                raise
+            raise EnvWriteError(
+                f"the new WLAN was saved and {CURRENT_PASSWORD_FILE.name} was "
+                f"marked STALE, but the TARGET WLAN CHANGED marker could not be "
+                f"added to {HISTORY_LOG} ({e}).") from e
         changed = True
     return changed
 
@@ -559,17 +618,16 @@ def main() -> None:
         previous = read_env()
         invalidated = invalidate_published_password(
             previous.get("MIST_WLAN_ID", ""), previous.get("MIST_WLAN_SSID", ""),
-            wlan.get("id", ""), wlan.get("ssid", ""))
-
-        upsert_env({
-            "MIST_API_URL": cfg["api_url"],
-            "MIST_API_TOKEN": cfg["token"],
-            "MIST_ORG_ID": cfg["org_id"],
-            "MIST_WLAN_TEMPLATE_ID": template.get("id", ""),
-            "MIST_WLAN_ID": wlan.get("id", ""),
-            "MIST_WLAN_SSID": wlan.get("ssid", ""),
-            "MIST_BACKUP_JSON": "true" if backup_pref else "false",
-        })
+            wlan.get("id", ""), wlan.get("ssid", ""),
+            save=lambda: upsert_env({
+                "MIST_API_URL": cfg["api_url"],
+                "MIST_API_TOKEN": cfg["token"],
+                "MIST_ORG_ID": cfg["org_id"],
+                "MIST_WLAN_TEMPLATE_ID": template.get("id", ""),
+                "MIST_WLAN_ID": wlan.get("id", ""),
+                "MIST_WLAN_SSID": wlan.get("ssid", ""),
+                "MIST_BACKUP_JSON": "true" if backup_pref else "false",
+            }))
     finally:
         lock.close()
 
