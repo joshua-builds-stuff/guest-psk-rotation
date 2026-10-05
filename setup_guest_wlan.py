@@ -211,21 +211,32 @@ def _atomic_write_text(path: Path, content: str) -> None:
         f.write(content)
         f.flush()
         os.fsync(f.fileno())
+    def chmod_replaced() -> None:
+        try:
+            _chmod_secret(path)
+        except OSError as e:
+            raise EnvWriteError(
+                f"{path} already has the new contents, but setting its mode "
+                f"to 0600 failed ({e}). Only the mode change failed; restrict "
+                f"the file to its owner by hand.") from e
+
     try:
         try:
             os.replace(tmp, path)
-            _chmod_secret(path)
-            return
         except PermissionError:
             pass
+        else:
+            chmod_replaced()
+            return
         _clear_hidden(path)
         try:
             os.replace(tmp, path)
-            _chmod_secret(path)
-            return
         except PermissionError:
             if not path.exists():
                 raise
+        else:
+            chmod_replaced()
+            return
         _chmod_secret(path)
         with open(path, "r+", encoding="utf-8") as f:
             f.seek(0)
