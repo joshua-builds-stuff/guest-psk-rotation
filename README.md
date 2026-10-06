@@ -152,7 +152,10 @@ replace again, then overwrites the existing file in place (`r+`, truncate,
 If the write still fails, setup exits **1** and the `ERROR:` line names
 `envwrite.<pid>.tmp`, which still holds the new settings (including the API
 token). The same writer is used when a WLAN switch replaces
-`current_password.txt` with a STALE notice.
+`current_password.txt` with a STALE notice. A different failure is the one
+that says the file already has the new contents and only the mode change
+failed: replace already succeeded, so that temp file is not there to rename.
+On a WLAN switch, see [Switching the managed WLAN](#switching-the-managed-wlan).
 
 That writer opens `envwrite.<pid>.tmp` with mode `0o600` and `chmod`s the
 temp file and `.env` to `0o600`. On Unix only the owner can read the token,
@@ -188,6 +191,25 @@ that file. When `password_history.log` already exists, a marker line is
 appended; older lines stay in the log. Setup then prints a NOTE telling you
 to run the rotation before handing out a password. See
 [docs/usage.md](docs/usage.md#after-setup-changes-the-wlan).
+
+If that STALE rewrite or the `.env` write fails **after** the new contents
+replaced the destination, setup does **not** put the previous password back.
+On Unix that is a mode-only failure: `chmod` to `0600` failed after
+`os.replace`. The `ERROR:` line says the file already has the new contents
+and that only the mode change failed. `current_password.txt` stays the
+STALE notice. If that failure was on the STALE file, setup still writes
+`.env` (this run's token and the new WLAN id). If it was on `.env`, `.env`
+already has those new contents. When `password_history.log` already exists,
+the `TARGET WLAN CHANGED` marker is still appended. Setup then exits **1**
+and does not print `SETUP COMPLETE`. Restrict the file named in the error
+to its owner, then run the rotation. Do not hand out a password from the
+STALE file. On Windows a `chmod` error is ignored, so this exit **1** is
+not a Windows mode-only failure.
+
+A write that fails **before** the destination is replaced still restores
+`current_password.txt` to the previous password, does not append the marker,
+and leaves `.env` on the previous WLAN id. That `ERROR:` line names
+`envwrite.<pid>.tmp`.
 
 ## 2. Rotate the password
 
@@ -414,8 +436,12 @@ password, and Ctrl-C (`Interrupted.`).
 **Exit 1** from `setup_guest_wlan.py` covers declining another credential
 attempt (`Try again?` answered no), a rotation holding `rotate.lock`
 (`A rotation is running ...`; the STALE notice, credentials, and WLAN id
-are not written), a failed `.env` or STALE-file write (`EnvWriteError`, the
-message names `envwrite.<pid>.tmp`), and Ctrl-C (`Cancelled.`).
+are not written), a failed `.env` or STALE-file write, and Ctrl-C
+(`Cancelled.`). A write that fails before the destination is replaced
+names `envwrite.<pid>.tmp`. A write that already replaced the destination
+and then failed only the mode change says the file already has the new
+contents; on a WLAN switch that does not restore the previous password
+(see [Switching the managed WLAN](#switching-the-managed-wlan)).
 
 **Exit 2** is only the rotation script, including `--dry-run`. Nothing is
 PUT and no local password file is written. The script does not enable the
