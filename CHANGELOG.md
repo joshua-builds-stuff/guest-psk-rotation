@@ -181,3 +181,26 @@ Python 3.8+, no `pip` install, and the `.env` key names are unchanged.
   ([#23](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/23)).
 
 Python 3.8+, no `pip` install, and the `.env` key names are unchanged.
+
+## 2026-10-06
+
+**Revision: minor**
+
+### Fixed
+
+- When setup switches WLANs, a write that has already replaced
+  `current_password.txt` or `.env` and then fails only the mode change does
+  not restore the previous password. The error says the file already has the
+  new contents and that only the mode change failed. The STALE notice stays.
+  `.env` is still saved if that failure was on the STALE file; if it was on
+  `.env`, that file already has the new WLAN id and this run's token. The
+  `TARGET WLAN CHANGED` marker is still appended when `password_history.log`
+  exists. Setup exits **1** and does not print `SETUP COMPLETE`. On Windows
+  a `chmod` error is ignored, so this exit is not a Windows mode-only
+  failure. A write that fails before the destination is replaced still
+  restores `current_password.txt`, does not append the marker, and leaves
+  `.env` on the previous WLAN id (that error names `envwrite.<pid>.tmp`).
+  [#46](https://github.com/joshua-builds-stuff/guest-psk-rotation/pull/46)
+  ([#44](https://github.com/joshua-builds-stuff/guest-psk-rotation/issues/44)).
+
+Python 3.8+, no `pip` install, and the `.env` key names are unchanged.

@@ -90,6 +90,11 @@ that temp file. The temp file has the new settings, including the API token,
 and it is created mode `0o600`. Move it to `.env` only after you can write
 in this folder, and do not leave it behind.
 
+Do not use that recovery when the error says the file already has the new
+contents and only the mode change failed. Replace already succeeded, and
+there is no `envwrite.<pid>.tmp` to rename. On a WLAN switch, see
+[If a WLAN switch exits 1 after replace](#if-a-wlan-switch-exits-1-after-replace).
+
 ### Who can read the saved files
 
 On Unix, a finished setup leaves `.env` mode `0o600`: the owner can read and
@@ -269,7 +274,7 @@ writes its own pid line.
 | Code | `rotate_guest_password.py` | `setup_guest_wlan.py` |
 |------|----------------------------|------------------------|
 | 0 | Password rotated, or `--dry-run` finished | Setup finished and printed `SETUP COMPLETE` |
-| 1 | Bad or missing `.env`, API host not a Mist cloud, lock busy, local password file failed after Mist accepted the password, or Ctrl-C | Credential prompt cancelled, a rotation holds `rotate.lock` (credentials and the WLAN were not saved), `.env` / STALE write failed, or Ctrl-C |
+| 1 | Bad or missing `.env`, API host not a Mist cloud, lock busy, local password file failed after Mist accepted the password, or Ctrl-C | Credential prompt cancelled, a rotation holds `rotate.lock` (credentials and the WLAN were not saved), `.env` / STALE write failed, or Ctrl-C. A mode-only failure after replace still exits 1 but keeps the new file contents |
 | 2 | `portal.auth` is not `password`, or `portal.passphrase_enabled` is not exactly true. Nothing was PUT | Not used |
 | 3 | Mist HTTP error, timeout (30s), connection error, non-JSON success body, or read-back mismatch | Same Mist failures on later steps; list-page failure; 401/403 while reading the chosen WLAN; validation retry declined |
 
@@ -336,3 +341,27 @@ create them; the first real rotation does.
 
 If only one of the two files exists, only that file is updated. If neither
 exists, there is nothing to mark and there is no NOTE.
+
+### If a WLAN switch exits 1 after replace
+
+On Unix, setup can exit **1** after `os.replace` succeeded and only setting
+mode `0600` failed. The error says the file already has the new contents and
+that only the mode change failed. This is not a rolled-back switch, and
+`SETUP COMPLETE` is not printed:
+
+- `current_password.txt` stays the STALE notice. The previous password is
+  not written back.
+- `.env` has this run's token and the new WLAN id. If the mode failure was
+  on the STALE file, that `.env` write still runs. If it was on `.env`, the
+  new contents are already there.
+- If `password_history.log` already exists, the `TARGET WLAN CHANGED` marker
+  is still appended.
+
+Do not hand out a password from the STALE file. Restrict the file named in
+the error to its owner, then run the rotation. On Windows, a `chmod` error
+is ignored, so this path does not apply.
+
+If the write fails before the destination is replaced, setup restores
+`current_password.txt` to the previous password, does not append the marker,
+and leaves `.env` on the previous WLAN id. That error names
+`envwrite.<pid>.tmp`.
