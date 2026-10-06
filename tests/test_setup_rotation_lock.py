@@ -72,9 +72,9 @@ class SetupHoldsLockTests(_TmpDirCase):
         real_invalidate = setup_guest_wlan.invalidate_published_password
         real_upsert = setup_guest_wlan.upsert_env
 
-        def invalidate(*a):
+        def invalidate(*a, **kw):
             seen.append(("invalidate", _try_flock(self.lock)))
-            return real_invalidate(*a)
+            return real_invalidate(*a, **kw)
 
         def upsert(updates):
             seen.append(("upsert", _try_flock(self.lock)))
