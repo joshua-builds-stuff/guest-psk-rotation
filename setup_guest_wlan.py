@@ -168,6 +168,14 @@ def validate_credentials(api_url, token, org_id):
 class EnvWriteError(Exception):
     """.env could not be written; the message names the preserved temp file."""
 
+    contents_committed = False
+
+
+class EnvModeError(EnvWriteError):
+    """The new contents replaced the destination; only setting 0600 failed."""
+
+    contents_committed = True
+
 
 def _clear_hidden(path: Path) -> None:
     """Best-effort removal of the Windows hidden/system attribute (no-op elsewhere)."""
@@ -215,7 +223,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
         try:
             _chmod_secret(path)
         except OSError as e:
-            raise EnvWriteError(
+            raise EnvModeError(
                 f"{path} already has the new contents, but setting its mode "
                 f"to 0600 failed ({e}). Only the mode change failed; restrict "
                 f"the file to its owner by hand.") from e
@@ -309,7 +317,9 @@ def invalidate_published_password(old_id: str, old_ssid: str,
     the marker is added. If it fails, current_password.txt is restored, the
     history log is left alone, and the error is raised (OSError as
     EnvWriteError). A failed marker append after `save` succeeded raises
-    EnvWriteError.
+    EnvWriteError. An EnvModeError (contents replaced, only chmod failed) from
+    the notice or from `save` does not trigger a restore: the switch is
+    completed, the marker is added, and the EnvModeError is raised at the end.
     """
     if not old_id or old_id == new_id:
         if save is not None:
@@ -320,18 +330,29 @@ def invalidate_published_password(old_id: str, old_ssid: str,
     new_label = f"'{new_ssid}' ({new_id})" if new_ssid else new_id
     changed = False
     previous = None
+    mode_errors = []
     try:
         if CURRENT_PASSWORD_FILE.exists():
             previous = CURRENT_PASSWORD_FILE.read_bytes()
-            _atomic_write_text(CURRENT_PASSWORD_FILE, (
-                f"STALE - no current password for {new_label}.\n"
-                f"On {timestamp} setup changed the managed WLAN from {old_label} "
-                f"to {new_label}.\n"
-                f"The previous password must not be given to guests. Run "
-                f"rotate_guest_password.py to set a new one.\n"))
+            try:
+                _atomic_write_text(CURRENT_PASSWORD_FILE, (
+                    f"STALE - no current password for {new_label}.\n"
+                    f"On {timestamp} setup changed the managed WLAN from {old_label} "
+                    f"to {new_label}.\n"
+                    f"The previous password must not be given to guests. Run "
+                    f"rotate_guest_password.py to set a new one.\n"))
+            except EnvWriteError as e:
+                if not e.contents_committed:
+                    raise
+                mode_errors.append(e)
             changed = True
         if save is not None:
-            save()
+            try:
+                save()
+            except EnvWriteError as e:
+                if not e.contents_committed:
+                    raise
+                mode_errors.append(e)
     except BaseException as e:
         if previous is not None:
             _restore_published_password(previous, e)
@@ -358,6 +379,10 @@ def invalidate_published_password(old_id: str, old_ssid: str,
                 f"marked STALE, but the TARGET WLAN CHANGED marker could not be "
                 f"added to {HISTORY_LOG} ({e}).") from e
         changed = True
+    if len(mode_errors) == 1:
+        raise mode_errors[0]
+    if mode_errors:
+        raise EnvModeError(" ".join(str(e) for e in mode_errors)) from mode_errors[0]
     return changed
 
 
